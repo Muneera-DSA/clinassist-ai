@@ -1,0 +1,21 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Large / regenerated data (original Synthea FHIR and derived exports)
+data/synthea_fhir/
+data/simulated_sources/**/*.json
+data/simulated_sources/**/*.csv
+data/derived/
+
+# Node
+node_modules/
+
+# Archives of old/regenerable data
+data/*.zip

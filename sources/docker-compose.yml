@@ -1,0 +1,57 @@
+# ClinAssist AI - three SEPARATE simulated source systems, one database server each.
+# They share nothing: different ports, different credentials, different schemas.
+# Zetaris federates them; the agent never connects to them directly.
+#
+# Start (from this folder):   docker compose up -d
+# Stop, keep data:            docker compose stop
+# Rebuild from CSVs:          docker compose down -v   then   docker compose up -d
+#
+# Data comes from ..\data\derived (run clinassist_build_sources.py first).
+# Synthetic data only.
+
+name: clinassist-sources
+
+services:
+  hospital-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: hospital_ehr
+      POSTGRES_USER: ${HOSPITAL_DB_USER:-hospital_ro}
+      POSTGRES_PASSWORD: ${HOSPITAL_DB_PASSWORD:?set HOSPITAL_DB_PASSWORD in sources/.env}
+    ports: ["127.0.0.1:55432:5432"]
+    volumes:
+      - ../data/derived/hospital:/data:ro
+      - ./init/hospital.sql:/docker-entrypoint-initdb.d/10-hospital.sql:ro
+      - hospital-pg:/var/lib/postgresql/data
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d hospital_ehr"], interval: 5s, retries: 30}
+
+  laboratory-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: lab_lis
+      POSTGRES_USER: ${LAB_DB_USER:-lab_ro}
+      POSTGRES_PASSWORD: ${LAB_DB_PASSWORD:?set LAB_DB_PASSWORD in sources/.env}
+    ports: ["127.0.0.1:55433:5432"]
+    volumes:
+      - ../data/derived/laboratory:/data:ro
+      - ./init/laboratory.sql:/docker-entrypoint-initdb.d/10-laboratory.sql:ro
+      - laboratory-pg:/var/lib/postgresql/data
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d lab_lis"], interval: 5s, retries: 30}
+
+  pharmacy-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: pharmacy_rx
+      POSTGRES_USER: ${PHARMACY_DB_USER:-pharmacy_ro}
+      POSTGRES_PASSWORD: ${PHARMACY_DB_PASSWORD:?set PHARMACY_DB_PASSWORD in sources/.env}
+    ports: ["127.0.0.1:55434:5432"]
+    volumes:
+      - ../data/derived/pharmacy:/data:ro
+      - ./init/pharmacy.sql:/docker-entrypoint-initdb.d/10-pharmacy.sql:ro
+      - pharmacy-pg:/var/lib/postgresql/data
+    healthcheck: {test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d pharmacy_rx"], interval: 5s, retries: 30}
+
+volumes:
+  hospital-pg:
+  laboratory-pg:
+  pharmacy-pg:

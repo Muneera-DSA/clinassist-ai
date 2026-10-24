@@ -1,0 +1,14 @@
+{
+  "name": "clinassist-ai",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "ClinAssist AI: Node parts (Meterless World Model integration).",
+  "scripts": {
+    "world": "tsx wm/build_world.ts",
+    "review": "tsx wm/review.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.20.0"
+  }
+}
