@@ -108,6 +108,9 @@ CASES = [
                                                                     rx=BP_MEDS), "low-bp-on-treatment", "review"),
     ("systolic BP 84 and 79, no blood-pressure medicine", rec(vitals=[("sbp", "2026-05-01", 84), ("sbp", "2026-08-01", 79)]),
      "low-bp-on-treatment", None),
+    ("systolic BP 84 and 79, blood-pressure medicine last prescribed 2019", rec(
+        vitals=[("sbp", "2026-05-01", 84), ("sbp", "2026-08-01", 79)], rx=[("lisinopril 10 MG Oral Tablet", "2019-09-01", "active")]),
+     "low-bp-on-treatment", None),
     ("systolic BP 118 on blood-pressure medicines", rec(vitals=[("sbp", "2026-05-01", 118), ("sbp", "2026-08-01", 121)], rx=BP_MEDS),
      "low-bp-on-treatment", None),
     ("CKD with no albumin/creatinine ratio", rec(labs=[("egfr", "2026-09-01", 50)], conds=[("Chronic kidney disease stage 3 (disorder)", "2024-01-01")]),

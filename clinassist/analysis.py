@@ -404,7 +404,9 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
 
     # Low blood pressure while on blood-pressure medicines (falls risk; prompts a medication review)
     sbp = series(rec, rules["analytes"]["sbp"]["loinc"])
-    bp_meds = [m for m in active if re.search(ANTIHYPERTENSIVE, m.ingredient)]
+    # count only medicines actually prescribed in the last 12 months (stale "active" entries are reported separately)
+    recent_cut = (rec.as_of - timedelta(days=365)).isoformat()
+    bp_meds = [m for m in active if re.search(ANTIHYPERTENSIVE, m.ingredient) and m.last_prescribed >= recent_cut]
     if len(sbp) >= 2 and bp_meds and all(p.value < 90 for p in sbp[-2:]):
         f.append(Finding("low-bp-on-treatment", "review",
                          f"Systolic blood pressure below 90 on the last two readings while on {len(bp_meds)} blood-pressure medicine(s)",
