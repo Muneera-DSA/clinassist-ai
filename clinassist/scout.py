@@ -40,6 +40,11 @@ def load_registry(path: Path = REGISTRY_FILE) -> dict:
 
 
 def _key() -> tuple[bytes, bool]:
+    try:  # read .env so the key is found even when nothing else has loaded it yet
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass
     k = os.environ.get("SCOUT_SIGNING_KEY", "")
     if k and not k.startswith("change-me"):
         return k.encode(), True
