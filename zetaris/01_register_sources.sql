@@ -25,6 +25,9 @@ CREATE DATASOURCE hospital_ehr DESCRIBE BY "Simulated hospital EHR - synthetic" 
 
 REGISTER DATASOURCE TABLES FROM hospital_ehr
 
+-- 2b. Added 25 Oct: the allergies table (run after rebuilding the hospital database)
+REGISTER DATASOURCE TABLES ("allergies") FROM hospital_ehr
+
 -- 3. Laboratory information system
 CREATE DATASOURCE lab_lis DESCRIBE BY "Simulated laboratory LIS - synthetic" OPTIONS (
   jdbcdriver "org.postgresql.Driver",

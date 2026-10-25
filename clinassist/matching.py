@@ -26,7 +26,11 @@ import unicodedata
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-AUTO_LINK = 9.0      # out of a maximum of 12.5
+# Auto-link only when every field agrees exactly (sex may be missing): 11.5 of a maximum 12.5.
+# Chosen from the threshold experiment (eval/eval_matching.py): at 9.0 a look-alike whose first name
+# differs by one letter was auto-linked when the real patient was absent from the index; at 11.5
+# there were 0 wrong merges in every scenario, at the cost of more cases sent to a person.
+AUTO_LINK = 11.5
 REVIEW = 4.0
 AMBIGUITY_MARGIN = 3.0
 
@@ -227,8 +231,13 @@ class Link:
     runner_up_score: float | None = None
 
 
-def link_system(hospital: list[Person], others: list[Person]) -> list[Link]:
-    """Link each record in another system to at most one hospital patient."""
+def link_system(hospital: list[Person], others: list[Person], auto_link: float = AUTO_LINK, review: float = REVIEW,
+                margin: float | None = AMBIGUITY_MARGIN, require_exact_dob: bool = True) -> list[Link]:
+    """Link each record in another system to at most one hospital patient.
+
+    The keyword arguments exist for experiments (threshold sweeps and ablations);
+    production uses the defaults.
+    """
     # Small data (~100 x 100), so compare all pairs. At hospital scale, add
     # blocking (e.g. birth year or phonetic surname) before this step.
     by_other: dict[str, list[Candidate]] = {}
@@ -237,7 +246,7 @@ def link_system(hospital: list[Person], others: list[Person]) -> list[Link]:
         by_other[o.record_id] = cands
 
     # Greedy one-to-one assignment, strongest evidence first.
-    pool = sorted((c for cs in by_other.values() for c in cs if c.score >= REVIEW), key=lambda c: -c.score)
+    pool = sorted((c for cs in by_other.values() for c in cs if c.score >= review), key=lambda c: -c.score)
     used_mrn: set[str] = set()
     chosen: dict[str, Candidate] = {}
     for c in pool:
@@ -261,13 +270,13 @@ def link_system(hospital: list[Person], others: list[Person]) -> list[Link]:
         rival = rivals[0] if rivals else None
         reasons = [e.text() for e in c.evidence]
         decision = "auto-link"
-        if c.score < AUTO_LINK:
-            decision = "review"; reasons.append(f"score {c.score:.1f} is below the auto-link threshold {AUTO_LINK}")
-        if c.ev("date of birth").level != "exact":
+        if c.score < auto_link:
+            decision = "review"; reasons.append(f"score {c.score:.1f} is below the auto-link threshold {auto_link}")
+        if require_exact_dob and c.ev("date of birth").level != "exact":
             decision = "review"; reasons.append("date of birth does not agree exactly: a person must confirm")
         if c.ev("sex").level == "conflict":
             decision = "review"; reasons.append("recorded sex conflicts")
-        if rival and rival.score >= REVIEW and c.score - rival.score < AMBIGUITY_MARGIN:
+        if margin is not None and rival and rival.score >= review and c.score - rival.score < margin:
             decision = "review"; reasons.append(
                 f"ambiguous: {rival.hospital.record_id} {rival.hospital.label()} also scores {rival.score:.1f}")
         links.append(Link(o.system, o.record_id, o.label(), decision, c.hospital.record_id, c.hospital.label(),

@@ -9,7 +9,7 @@ No passwords, keys or tokens are reproduced here.
 
 ---
 
-## Current status (24 Oct 2026)
+## Current status (25 Oct 2026)
 
 | Component | Status |
 |---|---|
@@ -19,8 +19,8 @@ No passwords, keys or tokens are reproduced here.
 | Three fragmented source systems (hospital / lab / pharmacy) | ✅ Built and running in Docker |
 | Sources registered in Zetaris (`hospital_ehr`, `lab_lis`, `pharmacy_rx`) | ✅ Cross-source SQL verified |
 | Meterless World Model reference | ✅ Tests pass; clinical integration pending |
-| Meterless Nightshift | ✅ Installed; NVIDIA provider being connected |
-| NVIDIA Nemotron via Nightshift | ⏳ Pending connection test (`smoke_test.py`) |
+| Meterless Nightshift | ✅ v1.2.1, NVIDIA key stored, runtime token in `.env` |
+| NVIDIA Nemotron via Nightshift | ✅ smoke test 4/4 PASS (25 Oct) |
 | Agent, reconciliation, timeline, UI | ⏳ To build |
 
 ---
@@ -153,15 +153,16 @@ Zetaris getting-started repo and gives three genuinely separate systems.
 
 ---
 
-## 7. Power layer — Nightshift and Nemotron (in progress)
+## 7. Power layer — Nightshift and Nemotron (connected 25 Oct)
 
-1. Nightshift v0.6.2 installed (installer hash checked with `Get-FileHash`).
-2. **Setup → Providers → NVIDIA**: NVIDIA API key from build.nvidia.com (kept only in Nightshift).
-3. Local model downloads skipped (no discrete GPU; Nemotron runs on NVIDIA's hosted endpoints).
-4. Lanes: fast = `nemotron-3.5-lightning-30b-a3b`, deep = `nemotron-3-super-120b-a12b`.
-5. **Console** → Runtime URL + token → project `.env` (`METERLESS_BASE_URL`, `METERLESS_RUNTIME_TOKEN`).
+1. Nightshift installed (v0.6.2, auto-updated to **v1.2.1** on 25 Oct; installer hash checked with `Get-FileHash`).
+2. NVIDIA key (team key) pasted by the user in **Setup → Providers → Cloud provider keys → NVIDIA → Add**; card shows "stored in daemon". The key is held only by the Nightshift daemon.
+3. Local model downloads skipped (Intel UHD graphics, no discrete GPU; Nemotron runs on NVIDIA's hosted endpoints).
+4. Runtime token: Nightshift writes it to `%LOCALAPPDATA%\ai.meterless.runtime\proxy-token` (also shown in **Setup → Fix endpoint → Console → API KEY**). Copied into `.env` (`METERLESS_RUNTIME_TOKEN`) with a PowerShell one-liner that never prints it.
+5. Model ids are routing modes (`meterless/fast`, `meterless/deep`); Nightshift chooses the serving model. Requesting an explicit `nvidia/...` id was still served by `nvidia/nemotron-3-ultra-550b-a55b`, so `.env` uses the routing modes and every call records the model that actually served it.
 6. Zetaris API key: **Management → API Tokens** → `.env` (`ZETARIS_API_KEY`).
-7. Verify: `.\.venv\Scripts\python.exe .\smoke_test.py`.
+7. Verify: `.\.venv\Scripts\python.exe .\smoke_test.py` → 4/4 PASS on 25 Oct (served by Nemotron Ultra 550B).
+8. Known issue: the runtime endpoint on `127.0.0.1:8088` went offline under heavy load (CPU 99%, memory 88% with Docker, Zetaris and other apps open). Fix: close unneeded apps, fully quit and restart Nightshift.
 
 ---
 

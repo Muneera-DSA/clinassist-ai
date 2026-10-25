@@ -42,15 +42,52 @@ class Point:
     eid: str
 
 
-def series(rec: PatientRecord, codes: list[str]) -> list[Point]:
-    pts = []
-    for i in rec.of("lab_result"):
+def series_groups(rec: PatientRecord, codes: list[str]) -> dict[str, list[Point]]:
+    """Results for one analyte, kept apart by source (test code + panel it came from).
+
+    Exact duplicates (same day, same value, same source) are counted once."""
+    groups: dict[str, dict[tuple, Point]] = {}
+    for i in rec.of("lab_result") + rec.of("observation"):  # lab system results and hospital vital signs
         if i.row["loinc_code"] in codes and i.row["value_num"] not in ("", None) and i.when:
             try:
-                pts.append(Point(i.when, float(i.row["value_num"]), i.eid))
+                v = float(i.row["value_num"])
             except ValueError:
                 continue
-    return sorted(pts, key=lambda p: p.when)
+            src = i.row.get("panel", "standalone") if i.kind == "lab_result" else "hospital vital signs"
+            label = f"{i.row['loinc_code']} | {src}"
+            groups.setdefault(label, {}).setdefault((i.when.date(), v), Point(i.when, v, i.eid))
+    return {k: sorted(v.values(), key=lambda p: p.when) for k, v in groups.items()}
+
+
+def primary_label(groups: dict[str, list[Point]]) -> str | None:
+    """The main series: most results in the window, then the most recent."""
+    if not groups:
+        return None
+    return max(groups, key=lambda k: (len(groups[k]), groups[k][-1].when))
+
+
+def series(rec: PatientRecord, codes: list[str]) -> list[Point]:
+    """The primary series for an analyte (never a mix of sources that disagree)."""
+    groups = series_groups(rec, codes)
+    label = primary_label(groups)
+    return groups[label] if label else []
+
+
+def same_day_conflicts(groups: dict[str, list[Point]], tolerance: float = 0.2) -> list[tuple[Point, Point]]:
+    """Days where the primary series and another source report clearly different values."""
+    label = primary_label(groups)
+    if not label or len(groups) < 2:
+        return []
+    main = {p.when.date(): p for p in groups[label]}
+    out = []
+    for other, pts in groups.items():
+        if other == label:
+            continue
+        for q in pts:
+            p = main.get(q.when.date())
+            if p and abs(p.value - q.value) / max(abs(p.value), abs(q.value), 1e-9) > tolerance:
+                out.append((p, q))
+    return sorted(out, key=lambda pq: pq[0].when)
 
 
 def theil_sen_per_year(pts: list[Point]) -> float | None:
@@ -82,14 +119,18 @@ class Trend:
     band: str
     evidence: list[str] = field(default_factory=list)
     points: list[list] = field(default_factory=list)
+    series: str = ""
+    other_series: dict = field(default_factory=dict)
 
 
 def trends(rec: PatientRecord, rules: dict) -> dict[str, Trend]:
     out = {}
     for key, a in rules["analytes"].items():
-        pts = series(rec, a["loinc"])
-        if not pts:
+        groups = series_groups(rec, a["loinc"])
+        label = primary_label(groups)
+        if not label:
             continue
+        pts = groups[label]
         lo, hi = a.get("illustrative_low"), a.get("illustrative_high")
         slope = theil_sen_per_year(pts) if len(pts) >= rules["trend_min_points"] else None
         # percent change between the median of the first and last quarter of results (less noisy than first vs last)
@@ -114,7 +155,8 @@ def trends(rec: PatientRecord, rules: dict) -> dict[str, Trend]:
                          sum(hi is not None and p.value > hi for p in pts),
                          sum(lo is not None and p.value < lo for p in pts), band,
                          [pts[k].eid for k in keep],
-                         [[p.when.date().isoformat(), round(p.value, 3)] for p in pts])
+                         [[p.when.date().isoformat(), round(p.value, 3)] for p in pts],
+                         label, {k: len(v) for k, v in groups.items() if k != label})
     return out
 
 
@@ -169,6 +211,9 @@ def ckd_category(egfr: float) -> str:
 
 
 CLINICAL_FINDINGS = ("prediabetes", "body mass index")
+# Small, explicit class map for the allergy check (substance word -> related medicine names). Demo scope only.
+ANTIHYPERTENSIVE = r"pril\b|sartan\b|dipine\b|thiazide\b|chlorthalidone|olol\b|furosemide|spironolactone|hydralazine|clonidine"
+ALLERGY_CLASSES = {"penicillin": ["amoxicillin", "ampicillin", "penicillin", "piperacillin"]}
 
 
 def is_clinical(display: str) -> bool:
@@ -268,10 +313,14 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                              "The <7% goal suits many adults but should be individualised.", [dm[0].eid, recent[-1].eid], "ada_2026_s6"))
 
     # Medication reconciliation
-    for m in active:
-        if m.last_prescribed < (rec.as_of - timedelta(days=365)).isoformat():
-            f.append(Finding("rx-stale-active", "review", f"{m.medication} is marked active but last prescribed {m.last_prescribed}",
-                             "Confirm with the patient whether it is still taken.", m.evidence, "reconciliation"))
+    # One grouped finding per patient (not one per medicine) to limit alert fatigue.
+    stale = [m for m in active if m.last_prescribed < (rec.as_of - timedelta(days=365)).isoformat()]
+    if stale:
+        f.append(Finding("rx-stale-active", "review",
+                         f"{len(stale)} medicine(s) marked active but not prescribed in over 12 months",
+                         "Confirm with the patient whether each is still taken: "
+                         + "; ".join(f"{m.medication} (last {m.last_prescribed})" for m in stale) + ".",
+                         [e for m in stale for e in m.evidence[:1]], "reconciliation"))
     seen: dict[str, Medication] = {}
     for m in active:
         if m.ingredient in seen:
@@ -280,12 +329,105 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                              "record_hygiene"))
         seen[m.ingredient] = m
 
+    # Longitudinal patterns (value-added feature: early risk identification).
+    # A result that was inside the band and has now been outside it on the last two consecutive tests,
+    # or one that is outside the band and still moving further away. Kidney markers are covered above.
+    for key, t in tr.items():
+        if key in rules.get("pattern_skip", []):
+            continue
+        a = rules["analytes"][key]
+        lo, hi = a.get("illustrative_low"), a.get("illustrative_high")
+        pts = series(rec, a["loinc"])
+        if len(pts) < 3:
+            continue
+        side = lambda v: "high" if hi is not None and v > hi else ("low" if lo is not None and v < lo else "in")  # noqa: E731
+        last2 = [side(p.value) for p in pts[-2:]]
+        if last2[0] == last2[1] != "in":
+            direction = last2[0]
+            inband = [p for p in pts[:-2] if side(p.value) == "in"]
+            worse = t.direction == ("rising" if direction == "high" else "falling")
+            if inband:
+                ref = inband[0]
+                f.append(Finding(f"pattern-crossed-{key}", "review",
+                                 f"{a['label']} moved from within range to {direction} on the last two tests",
+                                 f"{ref.value:g} {a['unit']} on {ref.when.date()} (within the illustrative band), then "
+                                 f"{pts[-2].value:g} on {pts[-2].when.date()} and {pts[-1].value:g} on {pts[-1].when.date()}. "
+                                 "A pattern for clinical review, not a diagnosis.", [ref.eid, pts[-2].eid, pts[-1].eid], "pattern_rule"))
+            elif worse:
+                f.append(Finding(f"pattern-worsening-{key}", "review",
+                                 f"{a['label']} has been {direction} throughout and is still moving further from range",
+                                 f"{pts[0].value:g} on {pts[0].when.date()} to {pts[-1].value:g} on {pts[-1].when.date()} "
+                                 f"({len(pts)} results).", [pts[0].eid, pts[-2].eid, pts[-1].eid], "pattern_rule"))
+
+    # Missing information (value-added feature: what is NOT in the record)
+    year_ago = as_of - timedelta(days=365)
+    ckd = active_conditions(rec, "chronic kidney disease")
+    if ckd or (egfr and egfr[-1].value < 60):
+        for key, label in (("egfr", "eGFR"), ("acr", "urine albumin/creatinine ratio")):
+            s_ = series(rec, rules["analytes"][key]["loinc"])
+            if not [p for p in s_ if p.when >= year_ago]:
+                last = f"last result {s_[-1].when.date()}" if s_ else "no result in the 3-year window"
+                f.append(Finding(f"gap-ckd-{key}", "review", f"No {label} in the last 12 months for a patient with CKD",
+                                 f"CKD monitoring needs eGFR and albuminuria at least yearly; {last}.",
+                                 ([ckd[0].eid] if ckd else []) + ([s_[-1].eid] if s_ else []), "kdigo_2024_monitor"))
+    anaemia = active_conditions(rec, "anemia")
+    esa = has("epoetin", "darbepoetin")
+    esa_recent = [m for m in meds if any(w in m.ingredient for w in ("epoetin", "darbepoetin")) and m.prescriptions_in_window]
+    if anaemia or esa or esa_recent:
+        hb = series(rec, rules["analytes"]["hemoglobin"]["loinc"])
+        if not [p for p in hb if p.when >= year_ago]:
+            why = "an anaemia-stimulating medicine was prescribed" if (esa or esa_recent) else "anaemia is on the active problem list"
+            last = f"last result {hb[-1].when.date()}" if hb else "no result in the 3-year window"
+            ev = [anaemia[0].eid] if anaemia else []
+            ev += (esa or esa_recent)[0].evidence[:1] if (esa or esa_recent) else []
+            f.append(Finding("gap-hemoglobin", "review", "No haemoglobin result in the last 12 months",
+                             f"{why[0].upper() + why[1:]}, but {last}.", ev + ([hb[-1].eid] if hb else []), "monitoring_rule"))
+
+    # Data quality: the same test reported twice on the same day with clearly different values
+    for key, a in rules["analytes"].items():
+        groups = series_groups(rec, a["loinc"])
+        conflicts = same_day_conflicts(groups)
+        if len(conflicts) >= 3:
+            p, q = conflicts[-1]
+            f.append(Finding(f"lab-conflict-{key}", "review",
+                             f"{a['label']}: two different results on the same day ({len(conflicts)} days)",
+                             f"For example {p.value:g} and {q.value:g} on {p.when.date()}. Trends and rules here use only the "
+                             f"main series ({primary_label(groups)}, {len(groups[primary_label(groups)])} results); "
+                             "the laboratory should confirm which result is valid.", [p.eid, q.eid], "lab_conflict"))
+
     # Problem-list hygiene: several CKD stages recorded as active at the same time
     stages = sorted(active_conditions(rec, "chronic kidney disease stage"), key=lambda i: i.row["display"])
     if len(stages) > 1:
         f.append(Finding("problem-list-ckd-stages", "review", f"{len(stages)} different CKD stages are all marked active",
                          "Only one stage can be current: " + "; ".join(i.row["display"] for i in stages)
                          + ". The problem list needs updating by the clinician.", [i.eid for i in stages], "record_hygiene"))
+
+    # Low blood pressure while on blood-pressure medicines (falls risk; prompts a medication review)
+    sbp = series(rec, rules["analytes"]["sbp"]["loinc"])
+    bp_meds = [m for m in active if re.search(ANTIHYPERTENSIVE, m.ingredient)]
+    if len(sbp) >= 2 and bp_meds and all(p.value < 90 for p in sbp[-2:]):
+        f.append(Finding("low-bp-on-treatment", "review",
+                         f"Systolic blood pressure below 90 on the last two readings while on {len(bp_meds)} blood-pressure medicine(s)",
+                         f"{sbp[-2].value:g} on {sbp[-2].when.date()} and {sbp[-1].value:g} on {sbp[-1].when.date()}; active: "
+                         + "; ".join(m.medication for m in bp_meds) + ". A clinician should review.",
+                         [sbp[-2].eid, sbp[-1].eid] + [m.evidence[0] for m in bp_meds], "low_bp_rule"))
+
+    # Drug allergy check: an active medicine that matches a recorded medication allergy
+    allergies = [i for i in rec.of("allergy") if "medication" in (i.row.get("category") or "")
+                 and (i.row.get("clinical_status") or "active") == "active"]
+    for al in allergies:
+        sub = al.row["substance"].lower()
+        words = {w for w in re.findall(r"[a-z]{4,}", sub)}
+        related = set(words)
+        for cls, members in ALLERGY_CLASSES.items():
+            if cls in words:
+                related |= set(members)
+        for m in active:
+            if any(w in m.ingredient or w in m.medication.lower() for w in related):
+                f.append(Finding("allergy-match", "high", f"{m.medication} is active and a {al.row['substance']} allergy is recorded",
+                                 f"Recorded reaction: {al.row.get('reaction') or 'not stated'}; criticality: "
+                                 f"{al.row.get('criticality') or 'not stated'}. A clinician or pharmacist should review.",
+                                 [al.eid] + m.evidence[:1], "allergy_check"))
 
     # Identity: records waiting for a person are not in this review
     for p in rec.pending:
@@ -328,7 +470,10 @@ def analyse(rec: PatientRecord, rules: dict | None = None) -> dict:
                     "sex": rec.patient.get("sex"), "deceased_at": rec.patient.get("deceased_at") or None},
         "window": {"as_of": rec.as_of.isoformat(), "since": rec.since.isoformat()},
         "identity": {"linked_records": rec.linked, "pending_review": rec.pending},
-        "counts": {k: len(rec.of(k)) for k in ("encounter", "condition", "procedure", "lab_result", "prescription", "administration")},
+        "counts": {k: len(rec.of(k)) for k in ("encounter", "condition", "procedure", "observation", "allergy", "lab_result",
+                                                "prescription", "administration")},
+        "allergies": [{"substance": i.row["substance"], "category": i.row.get("category"), "reaction": i.row.get("reaction"),
+                       "criticality": i.row.get("criticality"), "evidence": [i.eid]} for i in rec.of("allergy")],
         "active_conditions": [{"display": i.row["display"], "onset": i.when.date().isoformat() if i.when else None, "evidence": [i.eid]}
                               for i in rec.of("condition") if i.row["clinical_status"] == "active" and is_clinical(i.row["display"])],
         "trends": {k: asdict(v) for k, v in tr.items()},

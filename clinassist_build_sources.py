@@ -257,11 +257,36 @@ def build(fhir_dir: Path, out_dir: Path, seed: int) -> dict[str, Any]:
                         "reported_at": r.get("issued", ""),
                         "reference_range": "",   # Synthea supplies none; never invented here
                     })
+                elif r.get("component"):
+                    # Panels such as blood pressure carry their values in components (systolic, diastolic):
+                    # one row per component, so the values are not lost.
+                    for comp in r["component"]:
+                        _, ccode, cdisp = coding(comp.get("code"))
+                        cq = comp.get("valueQuantity") or {}
+                        ctext = coding(comp.get("valueCodeableConcept"))[2] if comp.get("valueCodeableConcept") \
+                            else str(comp.get("valueString", "") or "")
+                        tables["hospital/observations"].append({
+                            "observation_id": f"{rid}:{ccode}", "mrn": mrn, "encounter_id": ref_id(r.get("encounter")),
+                            "category": cat, "loinc_code": ccode, "test_name": cdisp, "value_num": cq.get("value", ""),
+                            "value_text": ctext, "unit": cq.get("unit", ""), "status": r.get("status", ""),
+                            "observed_at": r.get("effectiveDateTime", ""),
+                        })
                 else:  # vitals, surveys, social history stay in the hospital chart
                     tables["hospital/observations"].append({
                         "observation_id": rid, "mrn": mrn, "encounter_id": ref_id(r.get("encounter")),
                         "category": cat, **row_common, "observed_at": r.get("effectiveDateTime", ""),
                     })
+            elif rt == "AllergyIntolerance":
+                _, code, disp = coding(r.get("code"))
+                reaction = first_list(r.get("reaction"))
+                tables["hospital/allergies"].append({
+                    "allergy_id": rid, "mrn": mrn, "snomed_code": code, "substance": disp,
+                    "category": ";".join(r.get("category") or []), "criticality": r.get("criticality", ""),
+                    "clinical_status": coding(r.get("clinicalStatus"))[1],
+                    "verification_status": coding(r.get("verificationStatus"))[1],
+                    "reaction": coding(first_list(reaction.get("manifestation")))[2] if reaction else "",
+                    "recorded_at": r.get("recordedDate", ""),
+                })
             elif rt == "DiagnosticReport":
                 cat = coding(first_list(r.get("category")))[1]
                 if cat == "LAB" or "lab" in cat.lower():

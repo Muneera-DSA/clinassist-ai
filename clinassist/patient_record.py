@@ -29,17 +29,24 @@ TABLES: dict[str, tuple[str, str, str, str, str | None, list[str]]] = {
                        ["condition_id", "mrn", "snomed_code", "display", "clinical_status", "onset_at", "abatement_at"]),
     "procedure":      ("hospital_ehr.procedures", "hospital/procedures.csv", "procedure_id", "mrn", "performed_start",
                        ["procedure_id", "mrn", "display", "status", "performed_start"]),
+    "observation":    ("hospital_ehr.observations", "hospital/observations.csv", "observation_id", "mrn", "observed_at",
+                       ["observation_id", "mrn", "category", "loinc_code", "test_name", "value_num", "unit", "observed_at"]),
+    "allergy":        ("hospital_ehr.allergies", "hospital/allergies.csv", "allergy_id", "mrn", None,
+                       ["allergy_id", "mrn", "substance", "category", "criticality", "clinical_status", "reaction", "recorded_at"]),
     "lab_result":     ("lab_lis.lab_results", "laboratory/lab_results.csv", "result_id", "lab_patient_id", "collected_at",
                        ["result_id", "lab_patient_id", "accession_no", "loinc_code", "test_name", "value_num", "value_text", "unit", "status", "collected_at"]),
+    "lab_report":     ("lab_lis.lab_reports", "laboratory/lab_reports.csv", "report_id", "lab_patient_id", "effective_at",
+                       ["report_id", "lab_patient_id", "report_name", "effective_at", "result_ids"]),
     "prescription":   ("pharmacy_rx.prescriptions", "pharmacy/prescriptions.csv", "rx_id", "pharm_patient_id", None,
                        ["rx_id", "pharm_patient_id", "rxnorm_code", "medication", "status", "authored_on", "dosage_text", "prescriber"]),
     "administration": ("pharmacy_rx.administrations", "pharmacy/administrations.csv", "admin_id", "pharm_patient_id", "administered_at",
                        ["admin_id", "pharm_patient_id", "medication", "status", "administered_at"]),
 }
 SYSTEM_OF = {"patient": "hospital_ehr", "encounter": "hospital_ehr", "condition": "hospital_ehr", "procedure": "hospital_ehr",
-             "lab_result": "lab_lis", "prescription": "pharmacy_rx", "administration": "pharmacy_rx"}
+             "observation": "hospital_ehr", "allergy": "hospital_ehr",
+             "lab_result": "lab_lis", "lab_report": "lab_lis", "prescription": "pharmacy_rx", "administration": "pharmacy_rx"}
 TIMESTAMP_COLS = {"start_at", "end_at", "onset_at", "abatement_at", "performed_start", "collected_at", "authored_on",
-                  "administered_at", "deceased_at"}
+                  "administered_at", "deceased_at", "effective_at", "observed_at", "recorded_at"}
 
 
 def parse_dt(v: str) -> datetime | None:
@@ -143,14 +150,25 @@ def load_record(source, world_dir: Path, mrn: str, as_of: date, years: int = 3) 
     rec = PatientRecord(mrn, ident["label"], as_of, since, patient_rows[0], ident["linked_records"], ident["pending_review"])
 
     plan = [("encounter", [mrn], since_s), ("condition", [mrn], None), ("procedure", [mrn], since_s),
+            ("observation", [mrn], since_s), ("allergy", [mrn], None),
             ("lab_result", lab_ids, since_s), ("prescription", rx_ids, None), ("administration", rx_ids, since_s)]
     for kind, keys, since_filter in plan:
         _, _, id_col, _, date_col, _ = TABLES[kind]
         for row in source.fetch(kind, keys, since_filter):
-            when_col = date_col or {"condition": "onset_at", "prescription": "authored_on"}.get(kind)
+            when_col = date_col or {"condition": "onset_at", "prescription": "authored_on", "allergy": "recorded_at"}.get(kind)
             when = parse_dt(row.get(when_col, "")) if when_col else None
             if when and when.date() > as_of:
                 continue  # nothing from after the review date (no future information)
             rec.items.append(Item(f"E-{kind}-{row[id_col]}", kind, SYSTEM_OF[kind], row[id_col], when, row))
+    # Tag each lab result with the panel (report) it came from. The same test can arrive from two panels
+    # on the same day with different values; analysis keeps such series apart instead of mixing them.
+    panel_of = {}
+    for rep in source.fetch("lab_report", lab_ids, since_s):
+        for rid in (rep.get("result_ids") or "").split(";"):
+            if rid:
+                panel_of[rid] = rep["report_name"]
+    for i in rec.items:
+        if i.kind == "lab_result":
+            i.row["panel"] = panel_of.get(i.record_id, "standalone")
     rec.items.sort(key=lambda i: (i.when or datetime.min, i.eid))
     return rec

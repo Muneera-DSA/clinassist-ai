@@ -33,7 +33,8 @@ def to_markdown(r: dict) -> str:
         L.append("Waiting for identity review (not used): " +
                  ", ".join(f"{x['system']} {x['record_id']}" for x in r["identity"]["pending_review"]))
     c = r["counts"]
-    L += [f"Items in window: {c['encounter']} encounters, {c['lab_result']} lab results, {c['procedure']} procedures, "
+    L += [f"Items in window: {c['encounter']} encounters, {c['lab_result']} lab results, {c['observation']} vital-sign readings, "
+          f"{c['procedure']} procedures, "
           f"{c['administration']} administrations; {c['condition']} conditions and {c['prescription']} prescriptions (all time).", ""]
     L += ["## Findings"]
     for f in r["findings"]:
@@ -51,6 +52,8 @@ def to_markdown(r: dict) -> str:
     L += ["", "## Medications", "| Medication | Status | First prescribed | Last prescribed | Prescriptions in window |", "|---|---|---|---|---|"]
     for m in r["medications"]:
         L.append(f"| {m['medication']} | {m['status']} | {m['first_prescribed']} | {m['last_prescribed']} | {m['prescriptions_in_window']} |")
+    L += ["", "## Allergies"] + ([f"- {a['substance']} ({a['category']}; reaction: {a['reaction'] or 'not stated'})"
+                                  for a in r["allergies"]] or ["- None recorded"])
     L += ["", "## Active problems"] + [f"- {x['display']} (since {x['onset']})" for x in r["active_conditions"]]
     L += ["", "## Timeline (key events)"] + [f"- {e['date']} [{e['type']}] {e['text']}" for e in r["timeline"]]
     return "\n".join(L) + "\n"

@@ -13,12 +13,17 @@ CREATE TABLE procedures (procedure_id text PRIMARY KEY, mrn text REFERENCES pati
 CREATE TABLE observations (observation_id text PRIMARY KEY, mrn text REFERENCES patients, encounter_id text,
   category text, loinc_code text, test_name text, value_num double precision, value_text text, unit text,
   status text, observed_at timestamptz);
+CREATE TABLE allergies (allergy_id text PRIMARY KEY, mrn text REFERENCES patients, snomed_code text,
+  substance text, category text, criticality text, clinical_status text, verification_status text,
+  reaction text, recorded_at timestamptz);
 COPY patients     FROM '/data/patients.csv'     WITH (FORMAT csv, HEADER true, NULL '');
 COPY encounters   FROM '/data/encounters.csv'   WITH (FORMAT csv, HEADER true, NULL '');
 COPY conditions   FROM '/data/conditions.csv'   WITH (FORMAT csv, HEADER true, NULL '');
 COPY procedures   FROM '/data/procedures.csv'   WITH (FORMAT csv, HEADER true, NULL '');
 COPY observations FROM '/data/observations.csv' WITH (FORMAT csv, HEADER true, NULL '');
+COPY allergies    FROM '/data/allergies.csv'    WITH (FORMAT csv, HEADER true, NULL '');
 CREATE INDEX ON encounters (mrn, start_at);
 CREATE INDEX ON conditions (mrn);
 CREATE INDEX ON procedures (mrn);
 CREATE INDEX ON observations (mrn, loinc_code);
+CREATE INDEX ON allergies (mrn);

@@ -1,6 +1,6 @@
 {
   "_note": "Synthetic-data demonstration rule set. Thresholds come from the cited public sources, but the rule set is NOT validated for clinical use and every flag is for a qualified professional to review. Reference bands marked illustrative are generic adult values for display only.",
-  "version": "2026-10-24.1",
+  "version": "2026-10-25.2",
   "analytes": {
     "egfr": {
       "label": "eGFR",
@@ -87,6 +87,34 @@
       ],
       "illustrative_low": null,
       "illustrative_high": 30
+    },
+    "acr": {
+      "label": "Urine albumin/creatinine ratio",
+      "unit": "mg/g",
+      "loinc": [
+        "14959-1",
+        "9318-7"
+      ],
+      "illustrative_low": null,
+      "illustrative_high": 30
+    },
+    "sbp": {
+      "label": "Systolic blood pressure",
+      "unit": "mm[Hg]",
+      "loinc": [
+        "8480-6"
+      ],
+      "illustrative_low": null,
+      "illustrative_high": 140
+    },
+    "dbp": {
+      "label": "Diastolic blood pressure",
+      "unit": "mm[Hg]",
+      "loinc": [
+        "8462-4"
+      ],
+      "illustrative_low": null,
+      "illustrative_high": 90
     }
   },
   "trend_min_points": 3,
@@ -123,6 +151,39 @@
     "record_hygiene": {
       "title": "Record reconciliation check (internal rule): duplicate or conflicting entries need a clinician to resolve",
       "url": null
+    },
+    "kdigo_2024_monitor": {
+      "title": "KDIGO 2024 CKD Guideline: monitor eGFR and albuminuria (uACR) at least once a year in CKD, more often at higher risk",
+      "url": "https://kdigo.org/wp-content/uploads/2024/03/KDIGO-2024-CKD-Guideline.pdf"
+    },
+    "pattern_rule": {
+      "title": "Longitudinal pattern check (internal rule): results that move outside the illustrative band and stay there across consecutive tests are flagged for review",
+      "url": null
+    },
+    "monitoring_rule": {
+      "title": "Monitoring gap check (internal rule): an active condition or treatment with no relevant result in the last 12 months",
+      "url": null
+    },
+    "lab_conflict": {
+      "title": "Lab data-quality check (internal rule): the same test reported on the same day from two sources with values more than 20% apart",
+      "url": null
+    },
+    "nice_ng136_bp": {
+      "title": "NICE NG136 Hypertension in adults: clinic blood pressure of 140/90 mmHg or higher is the threshold for suspected hypertension (illustrative band here)",
+      "url": "https://www.nice.org.uk/guidance/ng136"
+    },
+    "allergy_check": {
+      "title": "Drug allergy check (internal rule): an active medicine whose name matches a recorded medication allergy, with a small class map (penicillins)",
+      "url": null
+    },
+    "low_bp_rule": {
+      "title": "Low blood pressure check (internal rule): systolic below 90 mmHg on the last two readings while blood-pressure medicines are active (a commonly used threshold for hypotension)",
+      "url": null
     }
-  }
+  },
+  "pattern_skip": [
+    "egfr",
+    "creatinine",
+    "urine_protein"
+  ]
 }
