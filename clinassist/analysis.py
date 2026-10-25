@@ -162,12 +162,33 @@ def trends(rec: PatientRecord, rules: dict) -> dict[str, Trend]:
 
 # --------------------------------------------------------------------------- medications
 
-INGREDIENT = re.compile(r"^([A-Za-z][A-Za-z\- ]*?)(?:\s+\d|\s*\[|$)")
+INGREDIENT = re.compile(r"^([A-Za-z][A-Za-z,()\- ]*?)(?:\s+\d|\s*\[|$)")
+# RxNorm-style prefixes that come before the drug name: "NDA020503", "24 HR", "1 ML", "120 ACTUAT", "21 DAY"
+PREFIX = re.compile(r"^(?:NDA\d+\s+)?(?:\d+(?:\.\d+)?\s*(?:HR|ML|ACTUAT|DAY)\s+)?", re.I)
+
+
+def _one(part: str) -> str:
+    part = PREFIX.sub("", part.strip())
+    m = INGREDIENT.match(part)
+    return (m.group(1) if m else part).strip(" ,").lower()
 
 
 def ingredient(name: str) -> str:
-    m = INGREDIENT.match(name.strip())
-    return (m.group(1) if m else name).strip().lower()
+    """Active ingredient(s) of an RxNorm-style product name, e.g.
+    '24 HR Metformin hydrochloride 500 MG Extended Release Oral Tablet' -> 'metformin hydrochloride',
+    'Fluticasone propionate 0.25 MG/ACTUAT / salmeterol 0.05 MG/ACTUAT ...' -> 'fluticasone propionate / salmeterol',
+    '{28 (norethindrone 0.35 MG Oral Tablet) } Pack [Camila 28 Day]' -> 'norethindrone'."""
+    s = name.strip()
+    if s.startswith("{"):  # multi-phase packs: ingredients of each phase, inert tablets dropped
+        parts = re.findall(r"\(([^()]*)\)", s)
+        found = {_one(q) for ph in parts for q in ph.split(" / ")} - {"inert ingredients"}
+        return " / ".join(sorted(found)) or s.lower()
+    found = []
+    for q in PREFIX.sub("", s).split(" / "):
+        ing = _one(q)
+        if ing and ing not in found:
+            found.append(ing)
+    return " / ".join(found) or s.lower()
 
 
 @dataclass
@@ -321,13 +342,20 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                          "Confirm with the patient whether each is still taken: "
                          + "; ".join(f"{m.medication} (last {m.last_prescribed})" for m in stale) + ".",
                          [e for m in stale for e in m.evidence[:1]], "reconciliation"))
+    # Duplicate therapy: two active products sharing ANY ingredient, so a combination product counts too
+    # (e.g. acetaminophen tablets plus an acetaminophen-containing cold remedy).
     seen: dict[str, Medication] = {}
     for m in active:
-        if m.ingredient in seen:
-            f.append(Finding("rx-duplicate", "review", f"Two active products contain {m.ingredient}",
-                             f"{seen[m.ingredient].medication} and {m.medication}.", seen[m.ingredient].evidence + m.evidence,
-                             "record_hygiene"))
-        seen[m.ingredient] = m
+        comps = [c for c in m.ingredient.split(" / ") if c]
+        pairs: dict[int, tuple[Medication, list[str]]] = {}
+        for c in comps:
+            if c in seen and seen[c] is not m:
+                pairs.setdefault(id(seen[c]), (seen[c], []))[1].append(c)
+        for other, shared in pairs.values():
+            f.append(Finding("rx-duplicate", "review", f"Two active products contain {' and '.join(shared)}",
+                             f"{other.medication} and {m.medication}.", other.evidence + m.evidence, "record_hygiene"))
+        for c in comps:
+            seen[c] = m
 
     # Longitudinal patterns (value-added feature: early risk identification).
     # A result that was inside the band and has now been outside it on the last two consecutive tests,

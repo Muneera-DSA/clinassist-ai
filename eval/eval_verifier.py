@@ -8,7 +8,7 @@ Reported per mutation type: detection rate with a 95% Wilson interval; plus the 
 on clean variants. Mutations the verifier is NOT designed to catch (a plausible claim with a valid
 citation and no number) are included on purpose, to measure the blind spot honestly.
 
-    .\.venv\Scripts\python.exe .\eval\eval_verifier.py --source csv --seed 7
+    .\.venv\Scripts\python.exe .\eval\eval_verifier.py --seed 7      (reads the local CSVs; no Zetaris or AI needed)
 Writes data\derived\eval\verifier_results.json and verifier_cases.csv
 """
 from __future__ import annotations
@@ -145,7 +145,16 @@ def mutate(text: str, kind: str, rng: random.Random, retrieved: list[str], resul
             return None
         f = rng.choice(highs)
         ev = set(f["evidence"])
-        keep = [l for l in lines if not (set(c.strip() for g in CITE.findall(l) for c in g.split(",")) & ev)]
+        need = min(2, len(ev))
+        # all-lines: delete every line that cites any of the finding's evidence (easy to catch)
+        # own-line: delete only the finding's own statement; other lines may still cite some of the same records
+        mutate.variant = rng.choice(["all-lines", "own-line"])
+        def cites(l):
+            return set(c.strip() for g in CITE.findall(l) for c in g.split(","))
+        if mutate.variant == "all-lines":
+            keep = [l for l in lines if not (cites(l) & ev)]
+        else:
+            keep = [l for l in lines if len(cites(l) & ev) < need]
         if len(keep) == len(lines):
             return None
         lines = keep

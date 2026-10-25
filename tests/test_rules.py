@@ -121,17 +121,46 @@ CASES = [
     ("medicine 'active' but last prescribed 2019", rec(rx=[("Simvastatin 20 MG Oral Tablet", "2019-05-01", "active")]), "rx-stale-active", "review"),
     ("two active simvastatin products", rec(rx=[("Simvastatin 20 MG Oral Tablet", "2026-05-01", "active"),
                                                 ("Simvastatin 10 MG Oral Tablet", "2026-06-01", "active")]), "rx-duplicate", "review"),
+    ("metformin and 24 HR extended-release metformin both active", rec(rx=[
+        ("metformin hydrochloride 500 MG Oral Tablet", "2026-05-01", "active"),
+        ("24 HR Metformin hydrochloride 500 MG Extended Release Oral Tablet", "2026-06-01", "active")]), "rx-duplicate", "review"),
+    ("acetaminophen tablets plus an acetaminophen-containing combination", rec(rx=[
+        ("Acetaminophen 325 MG Oral Tablet", "2026-05-01", "active"),
+        ("Acetaminophen 21.7 MG/ML / Dextromethorphan Hydrobromide 1 MG/ML / doxylamine succinate 0.417 MG/ML Oral Solution",
+         "2026-06-01", "active")]), "rx-duplicate", "review"),
+    ("metformin and simvastatin (different medicines)", rec(rx=[
+        ("metformin hydrochloride 500 MG Oral Tablet", "2026-05-01", "active"),
+        ("Simvastatin 20 MG Oral Tablet", "2026-06-01", "active")]), "rx-duplicate", None),
+]
+
+# Ingredient parsing (product names exactly as they appear in the Synthea pharmacy data)
+INGREDIENT_CASES = [
+    ("24 HR Metformin hydrochloride 500 MG Extended Release Oral Tablet", "metformin hydrochloride"),
+    ("metformin hydrochloride 500 MG Oral Tablet", "metformin hydrochloride"),
+    ("1 ML Epoetin Alfa 4000 UNT/ML Injection [Epogen]", "epoetin alfa"),
+    ("NDA020503 200 ACTUAT Albuterol 0.09 MG/ACTUAT Metered Dose Inhaler", "albuterol"),
+    ("60 ACTUAT Fluticasone propionate 0.25 MG/ACTUAT / salmeterol 0.05 MG/ACTUAT Dry Powder Inhaler",
+     "fluticasone propionate / salmeterol"),
+    ("heparin sodium, porcine 100 UNT/ML Injectable Solution", "heparin sodium, porcine"),
+    ("{28 (norethindrone 0.35 MG Oral Tablet) } Pack [Camila 28 Day]", "norethindrone"),
+    ("aspirin 81 MG Oral Capsule [Vazalore]", "aspirin"),
 ]
 
 
 def main() -> None:
+    from clinassist.analysis import ingredient
     failed = 0
+    for name, want in INGREDIENT_CASES:
+        got = ingredient(name)
+        failed += got != want
+        print(f"{'PASS' if got == want else 'FAIL'}  ingredient: {name[:60]:62s} -> {got!r}")
     for name, r, rule, expected in CASES:
         got = rules_fired(r).get(rule)
         ok = got == expected
         failed += not ok
         print(f"{'PASS' if ok else 'FAIL'}  {name:62s} {rule:28s} expected={expected} got={got}")
-    print(f"\n{len(CASES) - failed}/{len(CASES)} scenarios passed")
+    total = len(CASES) + len(INGREDIENT_CASES)
+    print(f"\n{total - failed}/{total} checks passed ({len(CASES)} rule scenarios, {len(INGREDIENT_CASES)} ingredient parses)")
     sys.exit(1 if failed else 0)
 
 

@@ -156,6 +156,7 @@ def evaluate(draft: str, retrieved: set[str], rec: PatientRecord, result: dict) 
     facts = fact_text(rec, result)
     issues: list[dict] = []
     cited_all: set[str] = set()
+    per_sentence: list[set[str]] = []
     sents = sentences(draft)
     for s in sents:
         cites = [c.strip() for grp in CITE.findall(s) for c in grp.split(",")]
@@ -168,6 +169,7 @@ def evaluate(draft: str, retrieved: set[str], rec: PatientRecord, result: dict) 
             issues.append({"type": "unknown-evidence", "sentence": s, "ids": unknown})
         known = [c for c in cites if c in retrieved]
         cited_all.update(known)
+        per_sentence.append(set(known))
         ctx = " ".join(facts.get(c, "") for c in known)
         for d in DATE.findall(body):
             if d not in ctx:
@@ -178,8 +180,13 @@ def evaluate(draft: str, retrieved: set[str], rec: PatientRecord, result: dict) 
                 issues.append({"type": "unsupported-number", "sentence": s, "value": m.group(0)})
         if DIRECTIVE.search(body) or DIAGNOSE.search(body):
             issues.append({"type": "treatment-directive", "sentence": s})
+    # A HIGH finding counts as covered only if ONE sentence cites at least two of its evidence records (or its
+    # only record). Overlap anywhere in the summary is not enough: a trend sentence can cite one of the same lab
+    # results while the alert itself has been dropped (found in notebook 05, fixed 25 Oct).
     for f in result["findings"]:
-        if f["severity"] == "high" and f["evidence"] and not (set(f["evidence"]) & cited_all):
+        ev = set(f["evidence"])
+        need = min(2, len(ev))
+        if f["severity"] == "high" and ev and not any(len(ev & s) >= need for s in per_sentence):
             issues.append({"type": "missing-high-finding", "finding": f["title"], "evidence": f["evidence"][:3]})
     if not sents:
         issues.append({"type": "empty"})
