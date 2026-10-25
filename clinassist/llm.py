@@ -51,8 +51,10 @@ class NightshiftLLM:
                    os.environ.get("METERLESS_MODEL", "meterless/fast"),
                    os.environ.get("METERLESS_MODEL_DEEP", "meterless/deep"))
 
-    def chat(self, system: str, user: str, deep: bool = False, max_tokens: int = 1500, temperature: float = 0.2) -> Reply:
-        model = self.deep_model if deep else self.model
+    def chat(self, system: str, user: str, deep: bool = False, max_tokens: int = 1500, temperature: float = 0.2,
+             model: str | None = None) -> Reply:
+        """model: an explicit Nightshift lane (e.g. from a Scout contract); otherwise fast, or deep if deep=True."""
+        model = model or (self.deep_model if deep else self.model)
         t0 = time.time()
         r = requests.post(self.url, timeout=self.timeout, headers={
             "Authorization": "Bearer " + self._token, "meterless-app": self.app,

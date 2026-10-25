@@ -1,7 +1,7 @@
 # ClinAssist AI — Setup Log
 
 A record of how the development environment was built, reconstructed from the
-PowerShell history (Cursor terminal) and the Ubuntu (WSL) history, 21–24 October 2026.
+PowerShell history (Cursor terminal) and the Ubuntu (WSL) history, 21–25 October 2026.
 No passwords, keys or tokens are reproduced here.
 
 **Machine:** Windows laptop, Intel UHD Graphics, 20 GB RAM · **Editor:** Cursor ·
@@ -9,19 +9,27 @@ No passwords, keys or tokens are reproduced here.
 
 ---
 
-## Current status (25 Oct 2026)
+## Current status (25 Oct 2026, evening)
 
 | Component | Status |
 |---|---|
 | WSL 2 + Ubuntu, Docker Desktop | ✅ Working |
 | Zetaris local platform (Docker) | ✅ Running, `verify.sh` 9/9 |
-| Synthea FHIR data (114 files, 112 patients) | ✅ Extracted |
-| Three fragmented source systems (hospital / lab / pharmacy) | ✅ Built and running in Docker |
-| Sources registered in Zetaris (`hospital_ehr`, `lab_lis`, `pharmacy_rx`) | ✅ Cross-source SQL verified |
-| Meterless World Model reference | ✅ Tests pass; clinical integration pending |
-| Meterless Nightshift | ✅ v1.2.1, NVIDIA key stored, runtime token in `.env` |
-| NVIDIA Nemotron via Nightshift | ✅ smoke test 4/4 PASS (25 Oct) |
-| Agent, reconciliation, timeline, UI | ⏳ To build |
+| Synthea FHIR data (114 files, 112 patients) | ✅ Extracted, unchanged |
+| Three fragmented source systems (hospital / lab / pharmacy) | ✅ Built and running in Docker; rebuilt 25 Oct with blood-pressure values and an allergies table |
+| Sources registered in Zetaris (`hospital_ehr`, `lab_lis`, `pharmacy_rx`) | ✅ 12 tables; `eval/audit_sources.py` → **ALL MATCH** |
+| Patient matching (`clinassist/matching.py`, strict cut-off 11.5) | ✅ Lab 99 auto + 13 review, pharmacy 91 auto + 17 review, 0 wrong merges |
+| Meterless World Model integration (`wm/`) | ✅ 190 links confirmed, 30 pending human review, with provenance |
+| Longitudinal analytics and rules (`clinassist/analysis.py`) | ✅ 36 rule scenarios + 8 ingredient checks pass (`tests/test_rules.py`) |
+| Meterless Scout Intent (`clinassist/scout.py`, our implementation of the spec) | ✅ Built 26 Oct; held-out: 0 of 14 unsafe requests reached the agent, 0 of 16 normal requests blocked; agent refuses unsigned plans (12/12 checks) |
+| Agent loop + groundedness verifier (`clinassist/agent.py`) | ✅ Built; verifier catches 87–91% of planted errors, 0 of 136 correct summaries rejected |
+| Meterless Nightshift runtime (port 8088) | ✅ v1.2.1, answering; smoke test 4/4 PASS |
+| Nightshift lane manager (`meterlessd`) | ⚠️ Not answering on 25 Oct evening, so lanes cannot be viewed or changed (see §7) |
+| NVIDIA Nemotron via Nightshift | ✅ Answering; Nightshift chooses the model (see §7) |
+| Nemotron benchmark (`eval/bench_llm.py`), second "judge" check | ⏳ Not run / not built yet |
+| Backend API, dashboard, README | ⏳ Developers |
+
+How to rebuild everything in order, the outputs, and what the demo may claim: `docs/ml_handoff.md`.
 
 ---
 
@@ -71,7 +79,24 @@ What the engine actually does (read from `src/resolve.ts`, `src/index.ts`):
 event-sourced shared state with provenance on every write; name-keyed entities
 are resolved by Levenshtein similarity (≥0.85 auto-merge, 0.82–0.85 operator
 review queue). `clinical-demo.ts` used hard-coded ID mappings, so it did not yet
-exercise matching — that is the planned integration (Phase B).
+exercise matching.
+
+**Integration in this project (done 24–25 Oct).** The engine's source is vendored in
+`vendor/meterless-world-model/` (declared as pre-existing code). `wm/build_world.ts` writes every
+patient, lab record and pharmacy record as an entity, auto-links as `same_person_as` and uncertain
+matches as `possible_same_person` (pending review), with provenance on every write; it builds in
+memory and saves once (much faster on Windows). `wm/review.ts` records a reviewer's approve/reject
+decision with their name as the source, and a reviewer always overrides the matcher (confidence 1.0
+vs at most 0.99). Output: `data\derived\world\patient_identity.json`.
+
+```powershell
+npm.cmd install
+npx.cmd tsx wm/build_world.ts                  # 112 patients, 190 links, 30 pending review
+npx.cmd tsx wm/review.ts list
+```
+
+The engine's own name-similarity resolver was **not** used for patients: in `eval/eval_matching.py` it
+merged 112 same-name strangers, because it compares names only.
 
 ---
 
@@ -98,6 +123,11 @@ and conventions** and logged, seeded demographic noise:
 | Laboratory LIS | `LP…` | `SURNAME`, forenames | `DD/MM/YYYY` | 19,903 results, 2,143 reports |
 | Pharmacy | `RX…` | `SURNAME, Given` | `YYYYMMDD` | 3,221 prescriptions, 571 administrations |
 
+Added on 25 Oct after the audit: blood-pressure panels are split into one row per component
+(systolic, diastolic; previously all 1,413 readings were empty), and a hospital `allergies` table
+(101 allergies, 7 of them to medicines). All other tables rebuilt byte-identical. Extra datasets for
+the experiments: `clinassist_build_sources.py --seed 7 --out data\derived\holdout_seed7` (also 2026, 99).
+
 39 perturbations (surname typos, shortened names, swapped/off-by-one dates, missing sex)
 are logged in `data\derived\_truth\`, together with the true identity crosswalk.
 `_truth` is used only to measure reconciliation accuracy; the agent never reads it.
@@ -122,8 +152,18 @@ CREATE DATASOURCE hospital_ehr DESCRIBE BY "Simulated hospital EHR - synthetic" 
   jdbcurl "jdbc:postgresql://host.docker.internal:55432/hospital_ehr",
   username "hospital_ro", password "<from sources\.env>", fetchsize "1000")
 REGISTER DATASOURCE TABLES ("patients","encounters","conditions","procedures","observations") FROM hospital_ehr
+REGISTER DATASOURCE TABLES ("allergies") FROM hospital_ehr      -- added 25 Oct
 -- same pattern for lab_lis (:55433) and pharmacy_rx (:55434)
 ```
+
+After the 25 Oct rebuild: `docker compose down -v`, `docker compose up -d`, register the `allergies`
+table, then `.\.venv\Scripts\python.exe .\eval\audit_sources.py` → **ALL MATCH** (12 tables:
+row counts, distinct keys and value sums identical to the CSVs).
+
+**Note on database users:** the users are named `hospital_ro`, `lab_ro`, `pharmacy_ro`, but in
+`docker-compose.yml` each is the database **owner**, not a read-only role. Our code only runs
+`SELECT`, but do not describe this as read-only access. Creating separate read-only roles is listed
+as a post-hackathon hardening step.
 
 Lessons: Zetaris lists only the `public` schema, so tables live there;
 single-letter table aliases returned *Bad Request* in one test — use `AS hp`, `AS lp`.
@@ -162,13 +202,36 @@ Zetaris getting-started repo and gives three genuinely separate systems.
 5. Model ids are routing modes (`meterless/fast`, `meterless/deep`); Nightshift chooses the serving model. Requesting an explicit `nvidia/...` id was still served by `nvidia/nemotron-3-ultra-550b-a55b`, so `.env` uses the routing modes and every call records the model that actually served it.
 6. Zetaris API key: **Management → API Tokens** → `.env` (`ZETARIS_API_KEY`).
 7. Verify: `.\.venv\Scripts\python.exe .\smoke_test.py` → 4/4 PASS on 25 Oct (served by Nemotron Ultra 550B).
-8. Known issue: the runtime endpoint on `127.0.0.1:8088` went offline under heavy load (CPU 99%, memory 88% with Docker, Zetaris and other apps open). Fix: close unneeded apps, fully quit and restart Nightshift.
+8. Known issue: the runtime endpoint on `127.0.0.1:8088` went offline under heavy load (CPU 99%, memory 88% with Docker, Zetaris and other apps open). Fix: close unneeded apps, fully quit and restart Nightshift. Back up on 25 Oct evening (port 8088 listening; smoke test 4/4 PASS).
+
+**Model probe (25 Oct, `eval/probe_models.py`):** one tiny request per model id, recording which model
+actually served it.
+
+| Requested | Served by | Seconds |
+|---|---|---|
+| `meterless/fast` | `nvidia/nemotron-3.5-super-vl-120b-a12b` | 1.3 |
+| `meterless/deep` | `nvidia/nemotron-3-ultra-550b-a55b` | 10.0 |
+| `meterless/judge` | `nvidia/nemotron-3-ultra-550b-a55b` | 8.5 |
+| 6 explicit `nvidia/...` ids (Nano 30B, Lightning 30B, Super 49B, Super 120B, Ultra 253B, Ultra 550B) | Nightshift's own choice: **0 of 6 honoured** | 7.8–13.5 |
+
+Findings: (a) only the routing mode has an effect; the code cannot pin a model, so every call logs the
+model that served it; (b) routing is not fixed: in the smoke test minutes earlier `meterless/fast`
+was served by Ultra 550B; (c) Ultra prints its reasoning before the answer; `llm.final_answer`
+strips it.
+
+**Lanes:** model-per-lane settings are under **NIGHT → LANES → Lanes & memory** (stored in
+`lanes.toml`). On 25 Oct evening that screen showed *"Unreachable — meterlessd is not answering its
+control socket"*, and Setup showed "Lanes ready 0/0" and "0 of 17 cloud keys" for the same reason
+(the runtime kept serving requests). Fix: the **Daemon controls ›** banner → Restart runtime, or quit
+Nightshift from the tray and reopen it. Plan once lanes are reachable: fast → a small Nemotron for the
+planner, deep → Ultra for the writer, judge → a Nemotron model different from the writer.
 
 ---
 
 ## Security notes
 
 - Secrets live only in `.env` and `sources\.env` (both git-ignored) and in Nightshift's Providers tab.
+- Nightshift Setup → Controls shows a phone pairing code; keep that page out of screenshots and slides.
 - The Zetaris metastore password was printed once during the 23 Oct inspection and appears in a
   shared ChatGPT link — delete that shared link. The database is bound to localhost.
 - Change the default Zetaris admin password from the user menu if not already done.

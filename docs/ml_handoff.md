@@ -17,6 +17,7 @@ All data is **synthetic** (Synthea). No real patient data is used anywhere.
 | Identity store | `wm/build_world.ts`, `wm/review.ts` | Writes every link and every reviewer decision into the **Meterless World Model**, with provenance (an audit trail). |
 | Patient record | `clinassist/patient_record.py` | Collects one patient's confirmed records from all three systems over a 3-year window. Every row gets an **evidence ID** such as `E-lab_result-RC30F74999E`. |
 | Clinical analytics | `clinassist/analysis.py`, `config/clinical_rules.json` | Trends (Theil–Sen), guideline-sourced rules, monitoring gaps, medicine checks, allergy check, timeline. Every finding lists the evidence IDs it rests on. |
+| Scout (front-door safety layer) | `clinassist/scout.py`, `config/scout_intents.json` | Implements the **Meterless Scout Intent** spec: understands the request, blocks unsafe ones (diagnosis/prescribing, prompt injection, another patient, population-wide data, role not permitted), routes tools and a Nightshift lane per AI role, and issues an HMAC-signed execution contract. |
 | AI agent + fact-checker | `clinassist/agent.py`, `clinassist/llm.py` | Planner → fetch evidence → Nemotron (via **Meterless Nightshift**) writes a summary → the verifier checks every sentence → redraft or escalate. Unverified AI text is never returned. |
 | Tests and experiments | `tests/`, `eval/` | Rule scenario tests, twins stress test, matching sweep, verifier red-team, Zetaris audit, AI benchmark. |
 
@@ -63,6 +64,9 @@ For the experiments, the extra datasets come from step 2 with a different seed:
 
 ## 4. Calling it from the backend
 
+**Always call Scout first, then the agent with the contract.** `require_contract=True` makes the agent refuse
+anything that did not pass Scout.
+
 ```python
 from datetime import date
 from pathlib import Path
@@ -71,17 +75,25 @@ from clinassist.zetaris_client import ZetarisClient
 from clinassist.analysis import analyse, load_rules
 from clinassist.agent import Agent
 from clinassist.llm import NightshiftLLM
+from clinassist.scout import Scout, load_patients
 
 DATA = Path("data/derived")
 rules = load_rules()                                   # config/clinical_rules.json
 source = ZetarisSource(ZetarisClient.from_env())       # or CsvSource(DATA) offline
 
-rec = load_record(source, DATA / "world", "MRN91862E3E", date(2026, 10, 24), years=3)
+scout = Scout(patients=load_patients(DATA / "world"))   # create once at start-up
+request, mrn = "Prepare a pre-visit summary", "MRN91862E3E"
+decision = scout.decide(request, mrn, {"id": "<logged-in user id>", "role": "clinician"})
+decision.status    # "approved" | "clarify" | "blocked"   -> show decision.message when not approved
+decision.risk      # {"level", "flags": e.g. ["clinical-decision"], "matched"}
+decision.contract  # signed contract (only when approved): intent, tools, plan, lanes, expiry
+
+rec = load_record(source, DATA / "world", mrn, date(2026, 10, 24), years=3)
 review = analyse(rec, rules)                           # dict, same as reviews/<MRN>.json
 
 agent = Agent(NightshiftLLM.from_env(), max_rounds=3)  # Agent(None) = rule-based summary only
-out = agent.run("Prepare a pre-visit summary", rec, review, rules)
-out.status    # "verified-ai" | "verified-rules" | "escalated"
+out = agent.run(request, rec, review, rules, contract=decision.contract, require_contract=True)
+out.status    # "verified-ai" | "verified-rules" | "escalated" | "refused" (no valid contract)
 out.summary   # markdown; every sentence ends with [evidence IDs]
 out.verdict   # verifier result (issues found, stats)
 out.trace     # list of steps: planner, executor, writer, evaluator; show this as the agent log
@@ -92,6 +104,12 @@ out.trace     # list of steps: planner, executor, writer, evaluator; show this a
 - If Nightshift is offline, `Agent.run` falls back to the verified rule-based summary (`status = "verified-rules"`).
   The UI should say so.
 - Patient IDs are checked before they go into SQL (`SAFE_ID`); keep passing MRNs, not free text.
+- Roles Scout knows: `clinician` (all review requests), `coordinator` (summary, findings, trends, gaps, linked records),
+  `records_staff` (linked records only). Pass the logged-in user's real role; Scout has no login of its own.
+- Set `SCOUT_SIGNING_KEY` in `.env` (see `.env.example`). Without it Scout signs with a temporary key that only
+  works inside one running process; the decision message says so.
+- Contracts expire after 15 minutes; the request text, intent, tools, lanes and user are inside the contract, so
+  store it with the result as the audit record.
 
 ---
 
@@ -138,6 +156,8 @@ the chart. `series` names the lab panel used; `other_series` counts results from
 | Clinical rule tests | 36 of 36 scenarios + 8 ingredient-parsing checks pass |
 | Fact-checker, planted errors caught | 87–91% overall (3 runs); 100% of invented numbers, dates, sources and missing HIGH findings |
 | Fact-checker, correct summaries wrongly rejected | 0 of 136 per run |
+| Scout, held-out requests (30, written before the code) | 23 of 30 handled as expected; **0 of 14 unsafe requests reached the agent** (12 blocked, 2 sent to clarification); **0 of 16 normal requests wrongly blocked**; 5 normal requests sent to clarification instead of understood |
+| Scout + agent end-to-end | 12 of 12 checks (tampered, missing, wrong-patient contracts refused; lanes applied; out-of-scope citations rejected) |
 | Zetaris vs source files | All 12 tables identical (`ALL MATCH`) |
 
 ---
@@ -151,6 +171,9 @@ the chart. `series` names the lab panel used; `other_series` counts results from
   but no clinician has validated the rule set. The alendronate check uses eGFR as a stand-in for creatinine clearance.
 - **Fact-checker blind spots:** it misses most treatment orders worded in new ways (only 30–43% caught) and
   cannot catch a false claim that contains no number. A second, AI-based check is planned.
+- **Scout is pattern-based, not an AI classifier.** It understood 77% of new phrasings in our held-out set; unclear
+  requests are sent back for clarification rather than guessed. Its held-out set was written by the same person
+  who built it, so it is not a fully independent test.
 - **AI benchmark not yet done.** Nemotron answered smoke tests through Nightshift; the full benchmark
   (`eval/bench_llm.py`) still has to be run.
 - **Production matching** should use the Emirates ID where available (Malaffi, Riayati); name and date-of-birth
@@ -162,6 +185,8 @@ the chart. `series` names the lab panel used; `other_series` counts results from
 
 ```powershell
 .\.venv\Scripts\python.exe .\tests\test_rules.py          # 44/44 checks passed
+.\.venv\Scripts\python.exe .\tests\test_scout_agent.py    # 12/12 checks passed
+.\.venv\Scripts\python.exe .\eval\eval_scout.py           # Scout dev + held-out results
 .\.venv\Scripts\python.exe .\tests\stress_twins.py        # 0 wrong merges
 .\.venv\Scripts\python.exe .\eval\audit_sources.py        # ALL MATCH
 .\.venv\Scripts\python.exe .\smoke_test.py                # Zetaris + Nightshift reachable

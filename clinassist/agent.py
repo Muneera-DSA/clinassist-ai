@@ -12,6 +12,10 @@
     Escalate  if the draft still fails after the allowed rounds, the AI text is NOT shown:
               the verified rule-based summary is used and the case is flagged for a person.
 
+Scout   (optional, recommended) the request first passes Scout (clinassist/scout.py), which issues a
+        signed execution contract. With a contract the agent verifies it, uses only the tools it allows
+        and the Nightshift lane it assigns to each role; with require_contract=True it refuses to run without one.
+
 Every step is written to a trace so a reviewer can see how the output was reached.
 """
 from __future__ import annotations
@@ -25,6 +29,7 @@ from typing import Any, Callable
 from .analysis import series
 from .llm import LLMError, extract_json, final_answer
 from .patient_record import PatientRecord
+from .scout import verify_contract
 
 # ---------------------------------------------------------------------------- tools
 
@@ -227,7 +232,7 @@ Choose only tools from the catalog. Prefer a small plan (3-6 steps) that covers 
 
 @dataclass
 class AgentResult:
-    status: str               # "verified-ai" | "verified-rules" | "escalated"
+    status: str               # "verified-ai" | "verified-rules" | "escalated" | "refused" (no valid Scout contract)
     summary: str
     verdict: dict
     plan: list[dict]
@@ -242,6 +247,19 @@ class Agent:
         self.max_rounds = max_rounds
         self.trace: list[dict] = []
         self._log = log
+        self.contract: dict | None = None
+
+    def _lane(self, role: str) -> str | None:
+        return (self.contract or {}).get("lanes", {}).get(role)
+
+    def _allowed(self, steps: list[dict]) -> list[dict]:
+        if not self.contract:
+            return steps
+        tools = set(self.contract["tools"])
+        kept = [s for s in steps if s.get("tool") in tools]
+        if len(kept) < len(steps):
+            self._t("scout", "steps-outside-contract-dropped", dropped=[s.get("tool") for s in steps if s.get("tool") not in tools])
+        return kept
 
     def _t(self, agent: str, action: str, **detail):
         entry = {"t": round(time.time(), 2), "agent": agent, "action": action, **detail}
@@ -251,25 +269,28 @@ class Agent:
 
     # -- planner
     def plan(self, task: str, result: dict, rules: dict) -> list[dict]:
+        base = [dict(s) for s in (self.contract["plan"] if self.contract else DEFAULT_PLAN)]
         if not self.llm:
-            self._t("planner", "default-plan", reason="no AI configured", steps=DEFAULT_PLAN)
-            return [dict(s) for s in DEFAULT_PLAN]
+            self._t("planner", "default-plan", reason="no AI configured", source="scout contract" if self.contract else "default", steps=base)
+            return base
         header = {"patient": result["patient"]["label"], "counts": result["counts"],
                   "finding_titles": [f"[{f['severity']}] {f['title']}" for f in result["findings"]],
                   "analyte_keys": list(result["trends"])}
-        prompt = f"Task: {task}\nPatient overview: {json.dumps(header)}\nTool catalog: {json.dumps(TOOL_HELP)}"
+        catalog = {k: v for k, v in TOOL_HELP.items() if not self.contract or k in self.contract["tools"]}
+        prompt = f"Task: {task}\nPatient overview: {json.dumps(header)}\nTool catalog: {json.dumps(catalog)}"
         try:
-            reply = self.llm.chat(PLANNER_SYSTEM, prompt, max_tokens=2000)
+            reply = self.llm.chat(PLANNER_SYSTEM, prompt, max_tokens=2000, model=self._lane("planner"))
             steps = extract_json(reply.text)["steps"]
-            valid = [s for s in steps if isinstance(s, dict) and s.get("tool") in TOOL_HELP]
+            valid = self._allowed([s for s in steps if isinstance(s, dict) and s.get("tool") in TOOL_HELP])
             dropped = len(steps) - len(valid)
             if not valid:
                 raise ValueError("no valid steps")
-            self._t("planner", "plan", model=reply.model, seconds=reply.seconds, steps=valid, dropped_invalid=dropped)
+            self._t("planner", "plan", lane=self._lane("planner"), model=reply.model, seconds=reply.seconds, steps=valid,
+                    dropped_invalid=dropped)
             return valid
         except (LLMError, ValueError, KeyError, TypeError) as e:
-            self._t("planner", "plan-failed-using-default", error=str(e)[:200], steps=DEFAULT_PLAN)
-            return [dict(s) for s in DEFAULT_PLAN]
+            self._t("planner", "plan-failed-using-default", error=str(e)[:200], steps=base)
+            return base
 
     # -- executor
     def execute(self, plan: list[dict], rec: PatientRecord, result: dict, rules: dict) -> dict:
@@ -292,15 +313,23 @@ class Agent:
         if feedback:
             msg += ("\n\nYour previous draft FAILED these checks. Fix every one; remove any sentence you cannot support:\n"
                     + json.dumps(feedback[:15]))
-        reply = self.llm.chat(WRITER_SYSTEM, msg, deep=self.writer_deep, max_tokens=4000)
+        reply = self.llm.chat(WRITER_SYSTEM, msg, deep=self.writer_deep, max_tokens=4000, model=self._lane("writer"))
         reply.text = final_answer(reply.text, "#")
-        self._t("writer", "draft", model=reply.model, seconds=reply.seconds, chars=len(reply.text), revision=bool(feedback),
-                text=reply.text)
+        self._t("writer", "draft", lane=self._lane("writer"), model=reply.model, seconds=reply.seconds, chars=len(reply.text),
+                revision=bool(feedback), text=reply.text)
         return reply.text, "ai"
 
     # -- the loop
-    def run(self, task: str, rec: PatientRecord, result: dict, rules: dict) -> AgentResult:
+    def run(self, task: str, rec: PatientRecord, result: dict, rules: dict, contract: dict | None = None,
+            require_contract: bool = False) -> AgentResult:
         self._t("agent", "start", task=task, patient=result["patient"]["mrn"])
+        if contract is not None or require_contract:
+            ok, why = verify_contract(contract, result["patient"]["mrn"])
+            self._t("scout", "contract-check", ok=ok, reason=why, contract_id=(contract or {}).get("contract_id"),
+                    intent=(contract or {}).get("intent"), tools=(contract or {}).get("tools"), lanes=(contract or {}).get("lanes"))
+            if not ok:
+                return AgentResult("refused", f"Not run: {why}. Requests must pass Scout first.", {"reason": why}, [], 0, self.trace)
+            self.contract = contract
         plan = self.plan(task, result, rules)
         feedback = None
         draft, kind, verdict = "", "rules", Verdict(False)
