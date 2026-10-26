@@ -2,7 +2,7 @@ import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { Api, errorText } from '../core/api';
 import { CitedText } from '../ui/components';
 
-interface Row { seq: number; kind: string; entity: string; what: string; value: string; by: string; at: string; }
+interface Row { seq: number; kind: string; entity: string; what: string; value: string; by: string; at: string; denied: boolean; }
 
 @Component({
   selector: 'ca-audit',
@@ -49,7 +49,7 @@ interface Row { seq: number; kind: string; entity: string; what: string; value: 
                 <thead><tr><th>#</th><th>Event</th><th>About</th><th>What</th><th>Value</th><th>By</th></tr></thead>
                 <tbody>
                   @for (r of rows(); track r.seq) {
-                    <tr [class.deny]="r.value.includes('denied') || r.value.includes('\\"allowed\\":false')">
+                    <tr [class.deny]="r.denied">
                       <td class="mono small">{{ r.seq }}</td><td class="small">{{ r.kind }}</td><td class="mono small">{{ r.entity }}</td>
                       <td class="small">{{ r.what }}</td><td class="mono small val">{{ r.value }}</td><td class="small">{{ r.by }}</td>
                     </tr>
@@ -82,7 +82,8 @@ export class AuditPage implements OnInit {
     const p = e.payload ?? {};
     return { seq: e.seq, kind: e.kind, entity: (p.id ?? p.about ?? p.from ?? '').replace(/^(request|action):/, ''),
       what: p.predicate ?? p.type ?? '', value: p.value !== undefined ? JSON.stringify(p.value) : JSON.stringify(p.attrs ?? {}).slice(0, 300),
-      by: `${p.source?.by ?? ''} (${p.source?.kind ?? ''})`, at: e.at };
+      by: `${p.source?.by ?? ''} (${p.source?.kind ?? ''})`, at: e.at,
+      denied: (p.predicate === 'authorization' && p.value?.allowed === false) || (p.predicate === 'status' && p.value === 'denied') };
   }));
   readonly header = computed(() => {
     const ev = this.events();

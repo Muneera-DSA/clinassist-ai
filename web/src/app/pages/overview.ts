@@ -33,7 +33,7 @@ import { Check, EngineBadge } from '../ui/components';
             <div class="row sysline"><span class="dot" [class.ok]="!!st.zetaris.patients?.[k]" [class.bad]="!st.zetaris.ok"></span>
               <ca-engine [system]="k" /><span class="muted small">{{ st.systems[k]?.label }} · {{ st.zetaris.patients?.[k] ?? '—' }} patients</span></div>
           }
-          <ca-check [ok]="!!st.meterless?.ok" label="Meterless supervisor (gateway)" [detail]="st.meterless?.ok ? ('World Model + H-MEM · ' + (st.meterless.catalog ?? 0) + ' scripts in memory · ' + (st.meterless.lessons ?? 0) + ' lessons') : (st.meterless?.error || 'not running')" />
+          <ca-check [ok]="!!st.meterless?.ok" label="Meterless supervisor (gateway)" [detail]="st.meterless?.ok ? ('World Model + H-MEM · ' + (st.meterless?.catalog ?? 0) + ' scripts in memory · ' + (st.meterless?.lessons ?? 0) + ' lessons') : (st.meterless?.error || 'not running')" />
           <ca-check [ok]="!!st.world_model.ok" label="Meterless World Model (identity)" [detail]="(st.world_model.events ?? 0) + ' events · ' + (st.world_model.pending_review ?? 0) + ' links awaiting review'" />
           <ca-check [ok]="st.scout.ok" label="Scout" [detail]="st.scout.intents.length + ' intents · ' + st.scout.signing_key + ' signing key'" />
           <ca-check [ok]="st.nightshift.ok" label="Nightshift → Nemotron" [detail]="st.nightshift.ok ? ((st.nightshift.models?.length ?? 0) + ' lanes: ' + (st.nightshift.models ?? []).join(', ')) : (st.nightshift.error || '')" />
