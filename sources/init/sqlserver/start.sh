@@ -26,6 +26,15 @@ DONE=$("${SA[@]}" -h -1 -W -Q "SET NOCOUNT ON; SELECT CASE WHEN OBJECT_ID('maste
 if [ "$DONE" != "1" ]; then
   echo "[clinassist] loading hospital_ehr from /data ..."
   "${SA[@]}" -Q "IF DB_ID('hospital_ehr') IS NOT NULL BEGIN ALTER DATABASE hospital_ehr SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE hospital_ehr; END; IF SUSER_ID('$HOSPITAL_DB_USER') IS NOT NULL DROP LOGIN [$HOSPITAL_DB_USER];"
+  # BULK INSERT on SQL Server for Linux decodes char files as CP437 regardless of the column's
+  # UTF-8 collation, corrupting accented names. Convert the mounted UTF-8 CSVs to UTF-16LE with
+  # a BOM instead; hospital.sql loads them as DATAFILETYPE = 'widechar'.
+  mkdir -p /tmp/csv-utf16
+  for f in /data/*.csv; do
+    printf '\xff\xfe' > "/tmp/csv-utf16/$(basename "$f")"
+    iconv -f UTF-8 -t UTF-16LE "$f" >> "/tmp/csv-utf16/$(basename "$f")"
+  done
+  echo "[clinassist] converted $(ls /tmp/csv-utf16/*.csv | wc -l) CSV files to UTF-16LE"
   if "${SA[@]}" -b -i /init/hospital.sql -v RO_USER="$HOSPITAL_DB_USER" RO_PASSWORD="$HOSPITAL_DB_PASSWORD"; then
     echo "[clinassist] hospital_ehr loaded."
   else

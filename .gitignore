@@ -9,7 +9,7 @@ __pycache__/
 *.pyc
 
 # Large / regenerated data (original Synthea FHIR and derived exports)
-data/synthea_fhir/
+# data/synthea_fhir/
 data/simulated_sources/**/*.json
 data/simulated_sources/**/*.csv
 data/derived/

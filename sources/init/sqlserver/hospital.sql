@@ -1,6 +1,6 @@
 -- Hospital EHR on Microsoft SQL Server 2022 (simulated, synthetic data only).
 -- Run once by init/sqlserver/start.sh when the hospital_ehr database does not exist yet.
--- CSVs (UTF-8) are bulk-loaded into UTF-8 staging columns as text (CODEPAGE is not supported on Linux), then typed (ISO-8601 UTC -> datetime2).
+-- start.sh converts the mounted UTF-8 CSVs to UTF-16LE; they are bulk-loaded as widechar into UTF-8 staging columns, then typed (ISO-8601 UTC -> datetime2).
 -- sqlcmd variables: RO_USER, RO_PASSWORD (from sources/.env).
 SET NOCOUNT ON;
 CREATE DATABASE hospital_ehr;
@@ -19,7 +19,7 @@ CREATE TABLE dbo.patients (
   [postcode] nvarchar(16)
 );
 CREATE TABLE #stage_patients ([mrn] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [given_name] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [middle_name] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [family_name] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [birth_date] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [sex] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [deceased_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [city] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [postcode] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8);
-BULK INSERT #stage_patients FROM '/data/patients.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d0a', TABLOCK);
+BULK INSERT #stage_patients FROM '/tmp/csv-utf16/patients.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d000a00', DATAFILETYPE = 'widechar', TABLOCK);
 INSERT INTO dbo.patients ([mrn], [given_name], [middle_name], [family_name], [birth_date], [sex], [deceased_at], [city], [postcode])
 SELECT NULLIF(REPLACE([mrn], CHAR(13), ''), ''), NULLIF(REPLACE([given_name], CHAR(13), ''), ''), NULLIF(REPLACE([middle_name], CHAR(13), ''), ''), NULLIF(REPLACE([family_name], CHAR(13), ''), ''), TRY_CONVERT(date, NULLIF(REPLACE([birth_date], CHAR(13), ''), ''), 23), NULLIF(REPLACE([sex], CHAR(13), ''), ''), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([deceased_at], CHAR(13), ''), ''), 19), 126), NULLIF(REPLACE([city], CHAR(13), ''), ''), NULLIF(REPLACE([postcode], CHAR(13), ''), '')
 FROM #stage_patients;
@@ -39,7 +39,7 @@ CREATE TABLE dbo.encounters (
   [provider_org] nvarchar(255)
 );
 CREATE TABLE #stage_encounters ([encounter_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [mrn] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [encounter_class] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [type_code] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [type_display] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [start_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [end_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [reason_code] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [reason_display] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [provider_org] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8);
-BULK INSERT #stage_encounters FROM '/data/encounters.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d0a', TABLOCK);
+BULK INSERT #stage_encounters FROM '/tmp/csv-utf16/encounters.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d000a00', DATAFILETYPE = 'widechar', TABLOCK);
 INSERT INTO dbo.encounters ([encounter_id], [mrn], [encounter_class], [type_code], [type_display], [status], [start_at], [end_at], [reason_code], [reason_display], [provider_org])
 SELECT NULLIF(REPLACE([encounter_id], CHAR(13), ''), ''), NULLIF(REPLACE([mrn], CHAR(13), ''), ''), NULLIF(REPLACE([encounter_class], CHAR(13), ''), ''), NULLIF(REPLACE([type_code], CHAR(13), ''), ''), NULLIF(REPLACE([type_display], CHAR(13), ''), ''), NULLIF(REPLACE([status], CHAR(13), ''), ''), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([start_at], CHAR(13), ''), ''), 19), 126), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([end_at], CHAR(13), ''), ''), 19), 126), NULLIF(REPLACE([reason_code], CHAR(13), ''), ''), NULLIF(REPLACE([reason_display], CHAR(13), ''), ''), NULLIF(REPLACE([provider_org], CHAR(13), ''), '')
 FROM #stage_encounters;
@@ -58,7 +58,7 @@ CREATE TABLE dbo.conditions (
   [recorded_at] datetime2(0)
 );
 CREATE TABLE #stage_conditions ([condition_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [mrn] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [encounter_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [snomed_code] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [display] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [clinical_status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [verification_status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [onset_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [abatement_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [recorded_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8);
-BULK INSERT #stage_conditions FROM '/data/conditions.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d0a', TABLOCK);
+BULK INSERT #stage_conditions FROM '/tmp/csv-utf16/conditions.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d000a00', DATAFILETYPE = 'widechar', TABLOCK);
 INSERT INTO dbo.conditions ([condition_id], [mrn], [encounter_id], [snomed_code], [display], [clinical_status], [verification_status], [onset_at], [abatement_at], [recorded_at])
 SELECT NULLIF(REPLACE([condition_id], CHAR(13), ''), ''), NULLIF(REPLACE([mrn], CHAR(13), ''), ''), NULLIF(REPLACE([encounter_id], CHAR(13), ''), ''), NULLIF(REPLACE([snomed_code], CHAR(13), ''), ''), NULLIF(REPLACE([display], CHAR(13), ''), ''), NULLIF(REPLACE([clinical_status], CHAR(13), ''), ''), NULLIF(REPLACE([verification_status], CHAR(13), ''), ''), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([onset_at], CHAR(13), ''), ''), 19), 126), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([abatement_at], CHAR(13), ''), ''), 19), 126), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([recorded_at], CHAR(13), ''), ''), 19), 126)
 FROM #stage_conditions;
@@ -77,7 +77,7 @@ CREATE TABLE dbo.procedure_history (
   [performed_end] datetime2(0)
 );
 CREATE TABLE #stage_procedures ([procedure_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [mrn] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [encounter_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [snomed_code] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [display] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [performed_start] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [performed_end] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8);
-BULK INSERT #stage_procedures FROM '/data/procedures.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d0a', TABLOCK);
+BULK INSERT #stage_procedures FROM '/tmp/csv-utf16/procedures.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d000a00', DATAFILETYPE = 'widechar', TABLOCK);
 INSERT INTO dbo.procedure_history ([procedure_id], [mrn], [encounter_id], [snomed_code], [display], [status], [performed_start], [performed_end])
 SELECT NULLIF(REPLACE([procedure_id], CHAR(13), ''), ''), NULLIF(REPLACE([mrn], CHAR(13), ''), ''), NULLIF(REPLACE([encounter_id], CHAR(13), ''), ''), NULLIF(REPLACE([snomed_code], CHAR(13), ''), ''), NULLIF(REPLACE([display], CHAR(13), ''), ''), NULLIF(REPLACE([status], CHAR(13), ''), ''), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([performed_start], CHAR(13), ''), ''), 19), 126), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([performed_end], CHAR(13), ''), ''), 19), 126)
 FROM #stage_procedures;
@@ -97,7 +97,7 @@ CREATE TABLE dbo.observations (
   [observed_at] datetime2(0)
 );
 CREATE TABLE #stage_observations ([observation_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [mrn] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [encounter_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [category] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [loinc_code] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [test_name] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [value_num] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [value_text] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [unit] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [observed_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8);
-BULK INSERT #stage_observations FROM '/data/observations.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d0a', TABLOCK);
+BULK INSERT #stage_observations FROM '/tmp/csv-utf16/observations.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d000a00', DATAFILETYPE = 'widechar', TABLOCK);
 INSERT INTO dbo.observations ([observation_id], [mrn], [encounter_id], [category], [loinc_code], [test_name], [value_num], [value_text], [unit], [status], [observed_at])
 SELECT NULLIF(REPLACE([observation_id], CHAR(13), ''), ''), NULLIF(REPLACE([mrn], CHAR(13), ''), ''), NULLIF(REPLACE([encounter_id], CHAR(13), ''), ''), NULLIF(REPLACE([category], CHAR(13), ''), ''), NULLIF(REPLACE([loinc_code], CHAR(13), ''), ''), NULLIF(REPLACE([test_name], CHAR(13), ''), ''), TRY_CONVERT(float, NULLIF(REPLACE([value_num], CHAR(13), ''), '')), NULLIF(REPLACE([value_text], CHAR(13), ''), ''), NULLIF(REPLACE([unit], CHAR(13), ''), ''), NULLIF(REPLACE([status], CHAR(13), ''), ''), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([observed_at], CHAR(13), ''), ''), 19), 126)
 FROM #stage_observations;
@@ -116,7 +116,7 @@ CREATE TABLE dbo.allergies (
   [recorded_at] datetime2(0)
 );
 CREATE TABLE #stage_allergies ([allergy_id] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [mrn] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [snomed_code] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [substance] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [category] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [criticality] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [clinical_status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [verification_status] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [reaction] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8, [recorded_at] varchar(4000) COLLATE Latin1_General_100_CI_AS_SC_UTF8);
-BULK INSERT #stage_allergies FROM '/data/allergies.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d0a', TABLOCK);
+BULK INSERT #stage_allergies FROM '/tmp/csv-utf16/allergies.csv' WITH (FORMAT = 'CSV', FIRSTROW = 2, FIELDQUOTE = '"', FIELDTERMINATOR = ',', ROWTERMINATOR = '0x0d000a00', DATAFILETYPE = 'widechar', TABLOCK);
 INSERT INTO dbo.allergies ([allergy_id], [mrn], [snomed_code], [substance], [category], [criticality], [clinical_status], [verification_status], [reaction], [recorded_at])
 SELECT NULLIF(REPLACE([allergy_id], CHAR(13), ''), ''), NULLIF(REPLACE([mrn], CHAR(13), ''), ''), NULLIF(REPLACE([snomed_code], CHAR(13), ''), ''), NULLIF(REPLACE([substance], CHAR(13), ''), ''), NULLIF(REPLACE([category], CHAR(13), ''), ''), NULLIF(REPLACE([criticality], CHAR(13), ''), ''), NULLIF(REPLACE([clinical_status], CHAR(13), ''), ''), NULLIF(REPLACE([verification_status], CHAR(13), ''), ''), NULLIF(REPLACE([reaction], CHAR(13), ''), ''), TRY_CONVERT(datetime2(0), LEFT(NULLIF(REPLACE([recorded_at], CHAR(13), ''), ''), 19), 126)
 FROM #stage_allergies;
