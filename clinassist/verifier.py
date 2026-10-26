@@ -67,6 +67,15 @@ class Verdict:
     stats: dict = field(default_factory=dict)
 
 
+def _guideline_texts() -> dict[str, str]:
+    """Guideline titles from the approved rule file (config/clinical_rules.json), by source id."""
+    try:
+        from .analysis import load_rules
+        return {k: (v.get("title") or "") for k, v in (load_rules().get("sources") or {}).items() if isinstance(v, dict)}
+    except Exception:  # noqa: BLE001 - without the rule file only record values count as support
+        return {}
+
+
 def fact_text(rec: PatientRecord, result: dict) -> dict[str, str]:
     """For every evidence id: the source row plus any finding/trend text built on it."""
     facts = {}
@@ -76,9 +85,14 @@ def fact_text(rec: PatientRecord, result: dict) -> dict[str, str]:
         pairs = [f"{i.row.get(v)} {i.row.get(u) or ''}" for v, u in (("value_num", "unit"), ("dose_value", "dose_unit"))
                  if i.row.get(v) not in (None, "")]
         facts[i.eid] = json.dumps(i.row, default=str) + (" | " + " ; ".join(pairs) if pairs else "")
+    sources = _guideline_texts()
     for f in result["findings"]:
+        # The finding's own guideline text (from the approved rule file) counts as support for the guideline's numbers,
+        # e.g. NICE NG203 "25% or more ... 15 ml/min/1.73 m2 per year". Found 26 Oct: Nemotron quoted the criterion
+        # correctly and the checker rejected it. Patient values must still match the patient's records.
+        guide = sources.get(f.get("source") or "", "")
         for e in f["evidence"]:
-            facts[e] = facts.get(e, "") + " " + f["title"] + " " + f["detail"]
+            facts[e] = facts.get(e, "") + " " + f["title"] + " " + f["detail"] + (" | guideline: " + guide if guide else "")
     for t in result["trends"].values():
         txt = json.dumps({k: v for k, v in t.items() if k not in ("points", "evidence")}, default=str)
         for e in t["evidence"]:

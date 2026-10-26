@@ -164,7 +164,7 @@ class Scout:
         lane = self.reg["lanes"].get("interpreter") or self.reg["lanes"].get("planner")
         t0 = time.time()
         try:
-            reply = self.llm.chat(system, user, max_tokens=800, temperature=0.0, model=lane)
+            reply = self.llm.chat(system, user, max_tokens=int(os.environ.get("AGENT_MAX_TOKENS", "8000")), temperature=0.0, model=lane)
             out = extract_json(reply.text)
             intent = str(out.get("intent", "unclear"))
             if intent not in self.reg["intents"] and intent not in ("unclear", "unsafe"):

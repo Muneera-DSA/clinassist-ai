@@ -19,6 +19,8 @@ Without AI the agent runs the contract's default plan of scripts and the determi
 from __future__ import annotations
 
 import json
+import os
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -35,6 +37,24 @@ from .verifier import Verdict, evaluate, ids_in, template_summary  # noqa: F401 
 # check is allowed for this request, and tells the boss which check it missed.
 HIGH_RULE_SCRIPT = {"ckd-accelerated": "check_egfr_decline", "renal-alendronate": "check_renal_dosing",
                     "renal-metformin": "check_renal_dosing", "allergy-match": "check_allergy_conflicts"}
+
+TRANSIENT = re.compile(r"empty_response|provider request failed|provider_error|HTTP 50[234]|timed out|Timeout|unreachable", re.I)
+PERMANENT = re.compile(r"Function not found|not found|unauthori[sz]ed|forbidden|invalid api key|switched off|HTTP 400", re.I)  # no point retrying
+RETRIES = 1          # extra attempt on the role's own lane after a transient provider failure
+RETRY_WAIT = 2
+# Nemotron's own text switch for short, direct answers. Measured 26 Oct on the app's real boss prompt: with it the boss
+# started the investigation correctly (fetch_record) in 14 s; with only the API thinking switch it answered without
+# running any script. Set AGENT_NO_THINK=0 in .env to turn it off.
+# Reply budget for every Nemotron call. Measured 26 Oct: Lightning sometimes reasons at length even with thinking
+# switched off; the reasoning is not returned but counts against max_tokens, so with 1500-2000 the reply came back
+# empty (failures took 15-27 s, i.e. the time to fill the budget). With 8000 the same prompt answered 4/4.
+WRITER_LENGTH = "Keep the whole answer short: at most about 250 words, only what this request needs."
+TOKENS = int(os.environ.get("AGENT_MAX_TOKENS", "8000"))
+NO_THINK = "/no_think\n" if os.environ.get("AGENT_NO_THINK", "1") != "0" else ""
+PLAN_NOT_ANSWER = ("\n\nIMPORTANT: your previous reply described steps to take or tools to call. The scripts have ALREADY run and "
+                   "their results are above. Do not describe a plan. Write the final answer now, in the required sections, and end "
+                   "every bullet with the evidence IDs (E-...) of the script results it uses.")
+
 
 BOSS_SYSTEM = """You are the lead clinical reviewer of ONE patient's record. You do not compute anything yourself: you have
 single-action scripts that fetch, compute, sort or aggregate, and you decide which to run, in which order, and when you
@@ -80,6 +100,21 @@ misleading, overstate what the evidence shows, link findings that do not actuall
 as advice to change treatment. Reply with JSON only:
 {"ok": true|false, "concerns": [{"sentence": "<quote the sentence>", "issue": "<one short sentence>"}]}
 Raise a concern only when a clinician could be misled; otherwise reply {"ok": true, "concerns": []}."""
+
+
+def compact(value: Any, keep_first: int = 2, keep_last: int = 6) -> Any:
+    """Shorten long result lists for the writer and judge: keep the first and the most recent rows (with their evidence
+    ids) and say how many were left out. Measured 26 Oct: the full eGFR series was 6,000 of the writer's 8,400 input
+    characters, and writer calls hit the provider's time limit (about 46 s). The fact-check still uses everything."""
+    if isinstance(value, list):
+        if len(value) > keep_first + keep_last and all(isinstance(x, dict) for x in value):
+            return ([compact(x) for x in value[:keep_first]]
+                    + [{"omitted": f"{len(value) - keep_first - keep_last} rows not shown"}]
+                    + [compact(x) for x in value[-keep_last:]])
+        return [compact(x) for x in value]
+    if isinstance(value, dict):
+        return {k: compact(v) for k, v in value.items()}
+    return value
 
 
 def observe(name: str, out: Any, limit: int = 1200) -> str:
@@ -183,24 +218,37 @@ class Agent:
         return (self.contract or {}).get("lanes", {}).get(role)
 
     def _ask(self, role: str, system: str, user: str, **kw):
-        """One Nemotron call for a role on the contract's lane, through the supervisor. If that lane fails, retry once
-        on the fast lane (also supervised) and log it."""
+        """One Nemotron call for a role, through the Meterless supervisor.
+
+        Tries the contract's lane for this role (twice on a transient provider failure), then each other Nemotron model
+        named in the contract, then the fast lane: one attempt each. Every attempt is approved and recorded by Meterless;
+        every switch is logged. Measured 26 Oct: the provider intermittently returns empty replies, and a failure can
+        take 20-45 s, so retries on the same model are kept to one."""
         llm = self.llm.for_role(role)
-        lane = self._lane(role)
-        try:
-            reply = llm.chat(system, user, model=lane, **kw)
-            reply.lane = lane or (llm.deep_model if kw.get("deep") else llm.model)
-            return reply
-        except LLMError as e:
-            fast = llm.model
-            used = lane or (llm.deep_model if kw.get("deep") else fast)
-            if not fast or used == fast:
-                raise
-            self._t(role, "lane-fallback", failed_lane=used, retry_lane=fast, error=str(e)[:160])
-            kw.pop("deep", None)
-            reply = llm.chat(system, user, model=fast, **kw)
-            reply.lane = fast
-            return reply
+        system = NO_THINK + system
+        first = self._lane(role) or (llm.deep_model if kw.get("deep") else llm.model)
+        others = [v for v in (self.contract or {}).get("lanes", {}).values() if v]
+        candidates = list(dict.fromkeys([first] + others + [llm.model]))
+        candidates = [c for c in candidates if c]
+        last: LLMError | None = None
+        for i, lane in enumerate(candidates):
+            tries = 1 + (RETRIES if i == 0 else 0)
+            for attempt in range(1, tries + 1):
+                try:
+                    reply = llm.chat(system, user, model=lane, **{k: v for k, v in kw.items() if k != "deep"})
+                    reply.lane = lane
+                    return reply
+                except LLMError as e:
+                    last = e
+                    retry_same = attempt < tries and TRANSIENT.search(str(e)) and not PERMANENT.search(str(e))
+                    if retry_same:
+                        self._t(role, "provider-retry", lane=lane, attempt=attempt, error=str(e)[:160], wait_s=RETRY_WAIT)
+                        time.sleep(RETRY_WAIT)
+                        continue
+                    break
+            if i + 1 < len(candidates):
+                self._t(role, "lane-fallback", failed_lane=lane, retry_lane=candidates[i + 1], error=str(last)[:160])
+        raise last if last else LLMError("no Nightshift lane available")
 
     def _script(self, name: str, args: dict, actor: str) -> Any:
         """Run one script through the Meterless supervisor."""
@@ -246,7 +294,7 @@ class Agent:
                       f"Calls made so far: {json.dumps(self.calls)}\n"
                       "Results so far:\n" + ("\n".join(seen) if seen else "(nothing yet)"))
             try:
-                reply = self._ask("planner", BOSS_SYSTEM, prompt, max_tokens=1500)
+                reply = self._ask("planner", BOSS_SYSTEM, prompt, max_tokens=TOKENS)
                 out = extract_json(reply.text)
                 calls = [c for c in (out.get("calls") or []) if isinstance(c, dict) and (c.get("script") or c.get("tool"))]
             except (LLMError, ActionDenied, ValueError, KeyError, TypeError, AttributeError) as e:
@@ -284,6 +332,24 @@ class Agent:
         args = c.get("args") or {}
         return c["tool"] + (f"({','.join(f'{k}={v}' for k, v in sorted(args.items()))})" if args else "")
 
+    def ensure_required_checks(self) -> None:
+        """Meterless-enforced minimum evidence: the checks for the HIGH rules this request must cover run before the
+        writer starts, even if the boss stopped early. The boss still chooses everything else. Measured 26 Oct: the
+        boss sometimes stopped after loading the record; the fact-check then sent the case back for a whole extra
+        round, and the longer redraft hit the provider's time limit."""
+        if self.ctx.rec is None and not any(c["tool"] == "fetch_record" for c in self.calls):
+            return
+        needed = sorted({HIGH_RULE_SCRIPT[r] for r in self.required_rules()})
+        missing = [n for n in needed if self._key({"tool": n, "args": {}}) not in self.ctx.gathered]
+        if not missing:
+            return
+        self._t("meterless", "required-checks-added", scripts=missing)
+        for name in missing:
+            try:
+                self._script(name, {}, actor="meterless-enforced")
+            except Exception as e:  # noqa: BLE001 - recorded by Meterless; the fact-check will report the gap
+                self._t("executor", "script-error", tool=name, error=str(e)[:200])
+
     def default_plan(self) -> None:
         for step in (self.contract["plan"] if self.contract else []):
             try:
@@ -297,12 +363,18 @@ class Agent:
             self._t("writer", "rule-based-draft", reason="no AI configured")
             return template_from_results(self.ctx), "rules"
         bundle = {k: v for k, v in self.ctx.gathered.items() if not k.startswith("verify_draft")}
-        msg = f"Request: {task}\nPatient: {self.ctx.rec.label if self.ctx.rec else self.ctx.mrn}\nScript results:\n{json.dumps(bundle, default=str)}"
+        msg = (f"Request: {task}\nPatient: {self.ctx.rec.label if self.ctx.rec else self.ctx.mrn}\n"
+               f"Script results:\n{json.dumps(compact(bundle), default=str)}\n\n{WRITER_LENGTH}")
         if feedback:
             msg += ("\n\nYour previous draft FAILED these checks. Fix every one; remove any sentence you cannot support:\n"
                     + json.dumps(feedback[:15]))
-        reply = self._ask("writer", WRITER_SYSTEM, msg, deep=self.writer_deep, max_tokens=4000)
+        reply = self._ask("writer", WRITER_SYSTEM, msg, deep=self.writer_deep, max_tokens=TOKENS)
         reply.text = final_answer(reply.text, "#")
+        if ids_in(bundle) and not ids_in(reply.text):
+            # No evidence IDs at all: the model wrote a plan or a refusal, not the cited summary. Correct it once.
+            self._t("writer", "not-an-answer", model=reply.model, chars=len(reply.text), text=reply.text[:400])
+            reply = self._ask("writer", WRITER_SYSTEM, msg + PLAN_NOT_ANSWER, deep=self.writer_deep, max_tokens=TOKENS)
+            reply.text = final_answer(reply.text, "#")
         self._t("writer", "draft", lane=reply.lane, model=reply.model, seconds=reply.seconds, chars=len(reply.text),
                 revision=bool(feedback), text=reply.text)
         return reply.text, "ai"
@@ -332,8 +404,8 @@ class Agent:
     def judge(self, draft: str) -> list[dict]:
         bundle = {k: v for k, v in self.ctx.gathered.items() if not k.startswith("verify_draft")}
         try:
-            reply = self._ask("judge", JUDGE_SYSTEM, f"Draft:\n{draft}\n\nEvidence (script results):\n{json.dumps(bundle, default=str)[:60000]}",
-                              max_tokens=1500, temperature=0.0)
+            reply = self._ask("judge", JUDGE_SYSTEM, f"Draft:\n{draft}\n\nEvidence (script results):\n{json.dumps(compact(bundle), default=str)[:60000]}",
+                              max_tokens=TOKENS, temperature=0.0)
             out = extract_json(reply.text)
             concerns = [c for c in (out.get("concerns") or []) if isinstance(c, dict) and c.get("issue")]
             self._t("judge", "review", lane=reply.lane, model=reply.model, seconds=reply.seconds, ok=not concerns, concerns=concerns[:8])
@@ -370,6 +442,8 @@ class Agent:
         else:
             self._t("planner", "default-plan", reason="no AI configured", steps=(contract or {}).get("plan"))
             self.default_plan()
+
+        self.ensure_required_checks()
 
         load_errors = [t for t in self.trace if t["action"] == "script-error" and t["tool"] == "fetch_record"]
         if self.ctx.rec is None and load_errors:

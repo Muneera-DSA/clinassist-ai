@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from clinassist.llm import LLMError, Reply  # noqa: E402
-from meterless.scout import Scout, load_patients, verify_contract  # noqa: E402
+from meterless.scout import REGISTRY_FILE, Scout, load_patients, verify_contract  # noqa: E402
 
 MRN = "MRN91862E3E"
 
@@ -50,7 +50,7 @@ def main() -> None:
     ok, why = verify_contract(d.contract, MRN) if d.contract else (False, "no contract")
     check("with Nemotron: mapped to a registered intent, signed contract", d.status == "approved" and
           d.intent.get("source") == "nemotron" and d.intent["primary"] == "medication.review" and ok, f"{d.status} {d.intent} {why}")
-    check("Nemotron was asked on the interpreter lane", llm.lanes == ["meterless/fast"], str(llm.lanes))
+    check("Nemotron was asked on the interpreter lane", llm.lanes == [json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))["lanes"]["interpreter"]], str(llm.lanes))
 
     llm = StandIn({"intent": "unsafe", "confidence": 0.8, "reason": "asks to change a treatment"})
     d = Scout(patients=patients, llm=llm).decide("Should we take him off alendronate?", MRN, {"id": "t", "role": "clinician"})

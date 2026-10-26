@@ -128,10 +128,13 @@ def main() -> None:
     check("a data fetch outside the patient's linked records is refused", denied and not sup.actions[-1]["allowed"], sup.actions[-1]["reason"])
 
     class DeepLaneDown(StandInLLM):
+        """The contract's writer lane is down (whatever lane the registry pins); the fast lane still works."""
         def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
-            if (model or (self.deep_model if deep else self.model)) == "meterless/deep":
-                self.lanes.append("meterless/deep:failed")
-                raise LLMError("Nightshift HTTP 502 on meterless/deep: 404 Function not found")
+            used = model or (self.deep_model if deep else self.model)
+            writer = "lead clinical reviewer" not in system and "independent clinical reviewer" not in system
+            if writer and used != self.model:
+                self.lanes.append(f"{used}:failed")
+                raise LLMError(f"Nightshift HTTP 502 on {used}: 404 Function not found")
             return super().chat(system, user, deep, max_tokens, temperature, model or self.model)
 
     llm = DeepLaneDown(plan_calls(summary.contract))
@@ -173,9 +176,10 @@ def main() -> None:
 
     llm = SkipsKidney(plan_calls(summary.contract, drop=("check_egfr_decline",)))
     r, _, _ = run("Prepare a pre-visit summary", llm, summary.contract)
-    check("a missed HIGH finding goes back to the boss, which runs the check; then verified",
-          any(t["action"] == "back-to-boss" for t in r.trace) and "check_egfr_decline" in [c["tool"] for c in r.plan] and r.status == "verified-ai",
-          r.status)
+    check("the boss skips a required check: Meterless runs it before the writer starts; verified in one round",
+          any(t["action"] == "required-checks-added" and "check_egfr_decline" in t["scripts"] for t in r.trace)
+          and "check_egfr_decline" in [c["tool"] for c in r.plan] and r.status == "verified-ai" and r.rounds == 1,
+          f"{r.status} rounds={r.rounds}")
 
     class OneConcern(StandInLLM):
         n = 0
@@ -198,6 +202,51 @@ def main() -> None:
     r, _, _ = run("Which records are linked?", contract=ident.contract)
     check("identity request (records staff): answered from the World Model view and verified",
           r.status == "verified-rules" and "## Identity links" in r.summary, f"{r.status} {r.verdict.get('issues', r.verdict)}"[:200])
+
+    import clinassist.agent as A
+    A.RETRY_WAIT = 0
+
+    class EmptyOnce(StandInLLM):
+        failed = False
+
+        def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
+            if "lead clinical reviewer" in system and not self.failed:
+                self.failed = True
+                raise LLMError('Nightshift HTTP 502 on m: {"error":{"message":"/m_empty_response","code":"provider_error"}}')
+            return super().chat(system, user, deep, max_tokens, temperature, model)
+
+    class EmptyAlways(StandInLLM):
+        def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
+            if "lead clinical reviewer" in system:
+                self.lanes.append("boss-empty")
+                raise LLMError('Nightshift HTTP 502 on m: {"error":{"message":"/m_empty_response","code":"provider_error"}}')
+            return super().chat(system, user, deep, max_tokens, temperature, model)
+
+    llm = EmptyAlways(plan_calls(summary.contract))
+    r, _, _ = run("Prepare a pre-visit summary", llm, summary.contract)
+    expected = 2 + len(set(summary.contract["lanes"].values()) - {summary.contract["lanes"]["planner"]}) + 1
+    check("a provider that keeps failing: 2 tries on its lane, 1 on each other Nemotron model, 1 on the fast lane, then the contract's plan",
+          llm.lanes.count("boss-empty") == expected and r.status in ("verified-ai", "verified-rules", "escalated"), f"{llm.lanes.count('boss-empty')} tries, {r.status}")
+
+    llm = EmptyOnce(plan_calls(summary.contract))
+    r, _, _ = run("Prepare a pre-visit summary", llm, summary.contract)
+    check("an empty provider reply is retried once on the same lane, then the run continues and is verified",
+          any(t["action"] == "provider-retry" for t in r.trace) and r.status == "verified-ai", r.status)
+
+    class PlanFirst(StandInLLM):
+        drafts = 0
+
+        def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
+            if "lead clinical reviewer" not in system and "independent clinical reviewer" not in system:
+                self.drafts += 1
+                if self.drafts == 1:
+                    return Reply("1. Retrieve all findings.\n2. List eGFR results.\n3. Compute the trend.", "stand-in-writer", 0.0)
+            return super().chat(system, user, deep, max_tokens, temperature, model)
+
+    llm = PlanFirst(plan_calls(summary.contract))
+    r, _, _ = run("Prepare a pre-visit summary", llm, summary.contract)
+    check("a draft with no evidence IDs (a plan, not an answer) is corrected at once, without using a fact-check round",
+          any(t["action"] == "not-an-answer" for t in r.trace) and r.status == "verified-ai" and r.rounds == 1, f"{r.status} rounds={r.rounds}")
 
     thinking = "The user wants a summary. I need to cite.\nFirst, list findings.\n1. eGFR fell.\n\n- eGFR fell. [E-a]\n- BP low. [E-b]"
     check("thinking-aloud before the answer is removed", final_answer(thinking) == "# Pre-visit summary\n- eGFR fell. [E-a]\n- BP low. [E-b]")
