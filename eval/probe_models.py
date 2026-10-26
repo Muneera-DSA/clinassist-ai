@@ -46,6 +46,7 @@ def main() -> None:
         try:
             r = requests.post(base.rstrip("/") + "/chat/completions", headers=headers, timeout=180, json={
                 "model": model, "temperature": 0, "max_tokens": 300,
+                "chat_template_kwargs": {"enable_thinking": False},
                 "messages": [{"role": "user", "content": PROMPT}]})
             secs = round(time.time() - t0, 1)
             if r.status_code >= 400:

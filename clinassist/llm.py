@@ -63,6 +63,7 @@ class NightshiftLLM:
                 "Authorization": "Bearer " + self._token, "meterless-app": self.app,
                 "meterless-scope": "user", "Content-Type": "application/json"},
                 json={"model": model, "temperature": temperature, "max_tokens": max_tokens,
+                      "chat_template_kwargs": {"enable_thinking": False},
                       "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
         except requests.RequestException as e:  # timeouts, refused connections: report as an AI failure, not a crash
             raise LLMError(f"Nightshift unreachable on {model}: {type(e).__name__}") from e

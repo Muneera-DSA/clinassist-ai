@@ -2,10 +2,10 @@
   "_note": "ClinAssist implementation of the Meterless Scout Intent spec (sense, interpret, guard, route, recommend). Patterns are case-insensitive regular expressions with weights. Synthetic-data demonstration; every approved request still ends with a clinician's review.",
   "version": "2026-10-26.3",
   "lanes": {
-    "planner": "meterless/fast",
-    "writer": "meterless/deep",
-    "judge": "meterless/judge",
-    "interpreter": "meterless/fast"
+    "planner": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "writer": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "judge": "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "interpreter": "nvidia/nemotron-3.5-lightning-30b-a3b"
   },
   "scoring": {
     "min_score": 2.0,

@@ -90,7 +90,8 @@ def nightshift_chat():
     r = requests.post(
         os.environ["METERLESS_BASE_URL"].rstrip("/") + "/chat/completions",
         headers=_ms_headers(),
-        json={"model": model, "messages": [{"role": "user", "content": "Reply with the single word: ready"}], "max_tokens": 20},
+        json={"model": model, "messages": [{"role": "user", "content": "Reply with the single word: ready"}], "max_tokens": 20,
+              "chat_template_kwargs": {"enable_thinking": False}},
         timeout=180,
     )
     if r.status_code >= 400:
