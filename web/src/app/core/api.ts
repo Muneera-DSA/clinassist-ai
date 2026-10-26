@@ -10,6 +10,7 @@ export interface Status {
   nightshift: { ok: boolean; seconds: number; error?: string; models?: string[]; fast?: string; deep?: string };
   world_model: { ok: boolean; error?: string; patients?: number; linked_records?: number; pending_review?: number; events?: number; audit_entries?: number; built_from?: string };
   scout: { ok: boolean; registry_version: string; intents: string[]; lanes: Record<string, string>; signing_key: string };
+  meterless?: { ok: boolean; error?: string; engines?: string[]; catalog?: number; lessons?: number };
   systems: Record<string, SystemInfo>;
 }
 export interface TableCount { system: string; table: string; zetaris_name: string; rows_zetaris: number | null; rows_csv: number | null; match: boolean; }
@@ -83,6 +84,9 @@ export class Api {
   provenance(mrn: string) { return this.get<{ mrn: string; entity_id: string; events: ProvenanceEvent[] }>(`/api/patients/${encodeURIComponent(mrn)}/provenance`); }
   identity() { return this.get<IdentityView>('/api/identity'); }
   review(body: { system: string; record_id: string; action: 'approve' | 'reject'; by: string; note?: string }) { return this.post<any>('/api/identity/review', body); }
+  rematch(by: string) { return this.post<any>('/api/identity/rematch', { by }); }
+  meterlessRuns() { return this.get<{ runs: string[] }>('/api/meterless/runs'); }
+  meterlessRun(id: string) { return this.get<{ run_id: string; events: any[]; audit: any[] }>(`/api/meterless/runs/${encodeURIComponent(id)}`); }
   scout(body: { prompt: string; mrn: string; role: string; user?: string }) { return this.post<ScoutDecision>('/api/scout', body); }
   runs() { return this.get<RunSummary[]>('/api/runs'); }
   run(id: string) { return this.get<any>(`/api/runs/${encodeURIComponent(id)}`); }

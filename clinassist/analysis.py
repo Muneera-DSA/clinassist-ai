@@ -248,104 +248,139 @@ def active_conditions(rec: PatientRecord, *words: str) -> list[Item]:
             and any(w in i.row["display"].lower() for w in words)]
 
 
-def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
-    f: list[Finding] = []
-    as_of = datetime.combine(rec.as_of, datetime.min.time())
-    active = [m for m in meds if m.status == "active"]
-    has = lambda *words: [m for m in active if any(w in m.ingredient for w in words)]  # noqa: E731
+# Each check below does ONE thing: it tests one guideline or record rule and returns the findings whose criterion
+# is met (a measured fact with its source). It does not decide what matters: the agent (Nemotron) does that.
+# run_rules() simply runs them all, for the patient view and the tests.
 
-    # Kidney function
+def _active(meds: list[Medication]) -> list[Medication]:
+    return [m for m in meds if m.status == "active"]
+
+
+def _has(meds: list[Medication], *words: str) -> list[Medication]:
+    return [m for m in _active(meds) if any(w in m.ingredient for w in words)]
+
+
+def check_kidney_stage(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """KDIGO GFR category of the latest eGFR."""
     egfr = series(rec, rules["analytes"]["egfr"]["loinc"])
-    if egfr:
-        last = egfr[-1]
-        cat = ckd_category(last.value)
-        f.append(Finding("ckd-category", "info", f"Latest eGFR {last.value:.0f} = GFR category {cat}",
-                         f"Measured {last.when.date()}. GFR category from the eGFR value alone; CKD staging also needs "
-                         f"chronicity (>3 months) and albuminuria, which a clinician confirms.", [last.eid], "kdigo_g"))
-        # NICE accelerated progression: >=25% sustained fall with category change within 12 months
-        hit = None
-        for a, p in enumerate(egfr):
-            for b in range(a + 1, len(egfr)):
-                q = egfr[b]
-                if (q.when - p.when).days > 365:
-                    break
-                if q.value <= 0.75 * p.value and ckd_category(q.value) != ckd_category(p.value):
-                    after = egfr[b + 1:b + 3]
-                    if after and all(x.value <= 0.75 * p.value for x in after):  # sustained on the next results
-                        hit = (p, q, after)
-                        break
-            if hit:
+    if not egfr:
+        return []
+    last = egfr[-1]
+    return [Finding("ckd-category", "info", f"Latest eGFR {last.value:.0f} = GFR category {ckd_category(last.value)}",
+                    f"Measured {last.when.date()}. GFR category from the eGFR value alone; CKD staging also needs "
+                    f"chronicity (>3 months) and albuminuria, which a clinician confirms.", [last.eid], "kdigo_g")]
+
+
+def check_egfr_decline(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """NICE NG203 accelerated progression: >=25% sustained fall with a category change within 12 months,
+    or a sustained fall of >=15 mL/min/1.73m2 per year (robust trend)."""
+    egfr = series(rec, rules["analytes"]["egfr"]["loinc"])
+    if not egfr:
+        return []
+    hit = None
+    for a, p in enumerate(egfr):
+        for b in range(a + 1, len(egfr)):
+            q = egfr[b]
+            if (q.when - p.when).days > 365:
                 break
-        tr_e = tr.get("egfr")
+            if q.value <= 0.75 * p.value and ckd_category(q.value) != ckd_category(p.value):
+                after = egfr[b + 1:b + 3]
+                if after and all(x.value <= 0.75 * p.value for x in after):  # sustained on the next results
+                    hit = (p, q, after)
+                    break
         if hit:
-            p, q, after = hit
-            f.append(Finding("ckd-accelerated", "high", "Accelerated fall in kidney function (NICE criterion met)",
-                             f"eGFR {p.value:.0f} on {p.when.date()} ({ckd_category(p.value)}) fell to {q.value:.0f} on "
-                             f"{q.when.date()} ({ckd_category(q.value)}): a {100 * (1 - q.value / p.value):.0f}% fall with a "
-                             f"category change within 12 months, confirmed by the next {len(after)} result(s).",
-                             [p.eid, q.eid] + [x.eid for x in after], "nice_ng203"))
-        elif tr_e and tr_e.slope_per_year is not None and tr_e.slope_per_year <= -15:
-            span_years = (egfr[-1].when - egfr[0].when).days / 365.25
-            enough = tr_e.n >= 4 and span_years >= 1
-            f.append(Finding("ckd-accelerated" if enough else "ckd-possible-fast-fall", "high" if enough else "review",
-                             "Accelerated fall in kidney function (NICE criterion met)" if enough
-                             else "Possible fast fall in eGFR (too few results to confirm)",
-                             f"eGFR falling about {abs(tr_e.slope_per_year):.0f} mL/min/1.73m2 per year (robust trend over "
-                             f"{tr_e.n} results across {span_years:.1f} years: {tr_e.first['value']:.0f} to {tr_e.latest['value']:.0f})."
-                             + ("" if enough else " At least 4 results over 12 months are needed to call it sustained; "
-                                "consider repeating the test."), tr_e.evidence, "nice_ng203"))
+            break
+    tr_e = tr.get("egfr")
+    if hit:
+        p, q, after = hit
+        return [Finding("ckd-accelerated", "high", "Accelerated fall in kidney function (NICE criterion met)",
+                        f"eGFR {p.value:.0f} on {p.when.date()} ({ckd_category(p.value)}) fell to {q.value:.0f} on "
+                        f"{q.when.date()} ({ckd_category(q.value)}): a {100 * (1 - q.value / p.value):.0f}% fall with a "
+                        f"category change within 12 months, confirmed by the next {len(after)} result(s).",
+                        [p.eid, q.eid] + [x.eid for x in after], "nice_ng203")]
+    if tr_e and tr_e.slope_per_year is not None and tr_e.slope_per_year <= -15:
+        span_years = (egfr[-1].when - egfr[0].when).days / 365.25
+        enough = tr_e.n >= 4 and span_years >= 1
+        return [Finding("ckd-accelerated" if enough else "ckd-possible-fast-fall", "high" if enough else "review",
+                        "Accelerated fall in kidney function (NICE criterion met)" if enough
+                        else "Possible fast fall in eGFR (too few results to confirm)",
+                        f"eGFR falling about {abs(tr_e.slope_per_year):.0f} mL/min/1.73m2 per year (robust trend over "
+                        f"{tr_e.n} results across {span_years:.1f} years: {tr_e.first['value']:.0f} to {tr_e.latest['value']:.0f})."
+                        + ("" if enough else " At least 4 results over 12 months are needed to call it sustained; "
+                           "consider repeating the test."), tr_e.evidence, "nice_ng203")]
+    return []
 
-        # Medicines with kidney-function limits
-        for m in has("alendron"):
-            if last.value < 35:
-                f.append(Finding("renal-alendronate", "high", f"{m.medication} active while eGFR is {last.value:.0f}",
-                                 "Alendronate is not recommended when creatinine clearance is below 35 mL/min. eGFR is used "
-                                 "here as a proxy; a pharmacist should calculate creatinine clearance and review.",
-                                 m.evidence + [last.eid], "fosamax_label"))
-        for m in has("metformin"):
-            if last.value < 30:
-                f.append(Finding("renal-metformin", "high", f"{m.medication} active while eGFR is {last.value:.0f}",
-                                 "Metformin is contraindicated below eGFR 30.", m.evidence + [last.eid], "fda_metformin_2016"))
-            elif last.value < 45:
-                f.append(Finding("renal-metformin", "review", f"{m.medication} active with eGFR {last.value:.0f}",
-                                 "Starting metformin is not recommended at eGFR 30-45; continuing needs a benefit-risk review.",
-                                 m.evidence + [last.eid], "fda_metformin_2016"))
 
-    # Potassium on an ACE inhibitor
+def check_renal_dosing(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Active medicines with kidney-function limits (alendronate, metformin) against the latest eGFR."""
+    egfr = series(rec, rules["analytes"]["egfr"]["loinc"])
+    if not egfr:
+        return []
+    last, f = egfr[-1], []
+    for m in _has(meds, "alendron"):
+        if last.value < 35:
+            f.append(Finding("renal-alendronate", "high", f"{m.medication} active while eGFR is {last.value:.0f}",
+                             "Alendronate is not recommended when creatinine clearance is below 35 mL/min. eGFR is used "
+                             "here as a proxy; a pharmacist should calculate creatinine clearance and review.",
+                             m.evidence + [last.eid], "fosamax_label"))
+    for m in _has(meds, "metformin"):
+        if last.value < 30:
+            f.append(Finding("renal-metformin", "high", f"{m.medication} active while eGFR is {last.value:.0f}",
+                             "Metformin is contraindicated below eGFR 30.", m.evidence + [last.eid], "fda_metformin_2016"))
+        elif last.value < 45:
+            f.append(Finding("renal-metformin", "review", f"{m.medication} active with eGFR {last.value:.0f}",
+                             "Starting metformin is not recommended at eGFR 30-45; continuing needs a benefit-risk review.",
+                             m.evidence + [last.eid], "fda_metformin_2016"))
+    return f
+
+
+def check_potassium_on_acei(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Latest potassium above the illustrative band while an ACE inhibitor is active."""
     k = series(rec, rules["analytes"]["potassium"]["loinc"])
-    acei = has("pril")
+    acei = _has(meds, "pril")
     if k and acei and k[-1].value > rules["analytes"]["potassium"]["illustrative_high"]:
-        f.append(Finding("acei-potassium", "review", f"Potassium {k[-1].value:.2f} mmol/L while on {acei[0].medication}",
-                         "ACE inhibitors can raise potassium; latest result is above the illustrative upper band.",
-                         acei[0].evidence + [k[-1].eid], "acei_k"))
+        return [Finding("acei-potassium", "review", f"Potassium {k[-1].value:.2f} mmol/L while on {acei[0].medication}",
+                        "ACE inhibitors can raise potassium; latest result is above the illustrative upper band.",
+                        acei[0].evidence + [k[-1].eid], "acei_k")]
+    return []
 
-    # Diabetes monitoring
+
+def check_diabetes_control(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Type 2 diabetes: HbA1c in the last 6 months, and the latest value against the common <7% goal."""
+    as_of = datetime.combine(rec.as_of, datetime.min.time())
     dm = active_conditions(rec, "diabetes mellitus type 2", "type 2 diabetes")
-    if dm:
-        a1c = series(rec, rules["analytes"]["hba1c"]["loinc"])
-        recent = [p for p in a1c if p.when >= as_of - timedelta(days=183)]
-        if not recent:
-            last = f"last result {a1c[-1].when.date()}" if a1c else "no result in the look-back window"
-            f.append(Finding("dm-a1c-gap", "review", "No HbA1c in the last 6 months for a patient with type 2 diabetes",
-                             f"Guidance is to assess glycaemic status at least twice a year; {last}.",
-                             [dm[0].eid] + ([a1c[-1].eid] if a1c else []), "ada_2026_s6"))
-        elif recent[-1].value >= 7:
-            f.append(Finding("dm-a1c-above-goal", "review", f"Latest HbA1c {recent[-1].value:.1f}% is above the common goal of <7%",
-                             "The <7% goal suits many adults but should be individualised.", [dm[0].eid, recent[-1].eid], "ada_2026_s6"))
+    if not dm:
+        return []
+    a1c = series(rec, rules["analytes"]["hba1c"]["loinc"])
+    recent = [p for p in a1c if p.when >= as_of - timedelta(days=183)]
+    if not recent:
+        last = f"last result {a1c[-1].when.date()}" if a1c else "no result in the look-back window"
+        return [Finding("dm-a1c-gap", "review", "No HbA1c in the last 6 months for a patient with type 2 diabetes",
+                        f"Guidance is to assess glycaemic status at least twice a year; {last}.",
+                        [dm[0].eid] + ([a1c[-1].eid] if a1c else []), "ada_2026_s6")]
+    if recent[-1].value >= 7:
+        return [Finding("dm-a1c-above-goal", "review", f"Latest HbA1c {recent[-1].value:.1f}% is above the common goal of <7%",
+                        "The <7% goal suits many adults but should be individualised.", [dm[0].eid, recent[-1].eid], "ada_2026_s6")]
+    return []
 
-    # Medication reconciliation
-    # One grouped finding per patient (not one per medicine) to limit alert fatigue.
-    stale = [m for m in active if m.last_prescribed < (rec.as_of - timedelta(days=365)).isoformat()]
-    if stale:
-        f.append(Finding("rx-stale-active", "review",
-                         f"{len(stale)} medicine(s) marked active but not prescribed in over 12 months",
-                         "Confirm with the patient whether each is still taken: "
-                         + "; ".join(f"{m.medication} (last {m.last_prescribed})" for m in stale) + ".",
-                         [e for m in stale for e in m.evidence[:1]], "reconciliation"))
-    # Duplicate therapy: two active products sharing ANY ingredient, so a combination product counts too
-    # (e.g. acetaminophen tablets plus an acetaminophen-containing cold remedy).
+
+def check_stale_medications(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Medicines marked active but not prescribed in over 12 months (one grouped finding, to limit alert fatigue)."""
+    stale = [m for m in _active(meds) if m.last_prescribed < (rec.as_of - timedelta(days=365)).isoformat()]
+    if not stale:
+        return []
+    return [Finding("rx-stale-active", "review", f"{len(stale)} medicine(s) marked active but not prescribed in over 12 months",
+                    "Confirm with the patient whether each is still taken: "
+                    + "; ".join(f"{m.medication} (last {m.last_prescribed})" for m in stale) + ".",
+                    [e for m in stale for e in m.evidence[:1]], "reconciliation")]
+
+
+def check_duplicate_ingredients(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Two active products sharing ANY ingredient, so a combination product counts too
+    (e.g. acetaminophen tablets plus an acetaminophen-containing cold remedy)."""
+    f: list[Finding] = []
     seen: dict[str, Medication] = {}
-    for m in active:
+    for m in _active(meds):
         comps = [c for c in m.ingredient.split(" / ") if c]
         pairs: dict[int, tuple[Medication, list[str]]] = {}
         for c in comps:
@@ -356,10 +391,13 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                              f"{other.medication} and {m.medication}.", other.evidence + m.evidence, "record_hygiene"))
         for c in comps:
             seen[c] = m
+    return f
 
-    # Longitudinal patterns (value-added feature: early risk identification).
-    # A result that was inside the band and has now been outside it on the last two consecutive tests,
-    # or one that is outside the band and still moving further away. Kidney markers are covered above.
+
+def check_range_crossings(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Early risk: a result that was in range and is now out of range on the last two tests, or one that is
+    out of range and still moving further away. Kidney markers are covered by their own checks."""
+    f: list[Finding] = []
     for key, t in tr.items():
         if key in rules.get("pattern_skip", []):
             continue
@@ -386,9 +424,15 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                                  f"{a['label']} has been {direction} throughout and is still moving further from range",
                                  f"{pts[0].value:g} on {pts[0].when.date()} to {pts[-1].value:g} on {pts[-1].when.date()} "
                                  f"({len(pts)} results).", [pts[0].eid, pts[-2].eid, pts[-1].eid], "pattern_rule"))
+    return f
 
-    # Missing information (value-added feature: what is NOT in the record)
+
+def check_monitoring_gaps(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Missing information: CKD monitoring (eGFR, albumin/creatinine ratio) and haemoglobin for anaemia."""
+    f: list[Finding] = []
+    as_of = datetime.combine(rec.as_of, datetime.min.time())
     year_ago = as_of - timedelta(days=365)
+    egfr = series(rec, rules["analytes"]["egfr"]["loinc"])
     ckd = active_conditions(rec, "chronic kidney disease")
     if ckd or (egfr and egfr[-1].value < 60):
         for key, label in (("egfr", "eGFR"), ("acr", "urine albumin/creatinine ratio")):
@@ -399,7 +443,7 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                                  f"CKD monitoring needs eGFR and albuminuria at least yearly; {last}.",
                                  ([ckd[0].eid] if ckd else []) + ([s_[-1].eid] if s_ else []), "kdigo_2024_monitor"))
     anaemia = active_conditions(rec, "anemia")
-    esa = has("epoetin", "darbepoetin")
+    esa = _has(meds, "epoetin", "darbepoetin")
     esa_recent = [m for m in meds if any(w in m.ingredient for w in ("epoetin", "darbepoetin")) and m.prescriptions_in_window]
     if anaemia or esa or esa_recent:
         hb = series(rec, rules["analytes"]["hemoglobin"]["loinc"])
@@ -410,8 +454,12 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
             ev += (esa or esa_recent)[0].evidence[:1] if (esa or esa_recent) else []
             f.append(Finding("gap-hemoglobin", "review", "No haemoglobin result in the last 12 months",
                              f"{why[0].upper() + why[1:]}, but {last}.", ev + ([hb[-1].eid] if hb else []), "monitoring_rule"))
+    return f
 
-    # Data quality: the same test reported twice on the same day with clearly different values
+
+def check_lab_conflicts(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Data quality: the same test reported twice on the same day with clearly different values."""
+    f: list[Finding] = []
     for key, a in rules["analytes"].items():
         groups = series_groups(rec, a["loinc"])
         conflicts = same_day_conflicts(groups)
@@ -422,27 +470,36 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
                              f"For example {p.value:g} and {q.value:g} on {p.when.date()}. Trends and rules here use only the "
                              f"main series ({primary_label(groups)}, {len(groups[primary_label(groups)])} results); "
                              "the laboratory should confirm which result is valid.", [p.eid, q.eid], "lab_conflict"))
+    return f
 
-    # Problem-list hygiene: several CKD stages recorded as active at the same time
+
+def check_problem_list(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Problem-list hygiene: several CKD stages recorded as active at the same time."""
     stages = sorted(active_conditions(rec, "chronic kidney disease stage"), key=lambda i: i.row["display"])
     if len(stages) > 1:
-        f.append(Finding("problem-list-ckd-stages", "review", f"{len(stages)} different CKD stages are all marked active",
-                         "Only one stage can be current: " + "; ".join(i.row["display"] for i in stages)
-                         + ". The problem list needs updating by the clinician.", [i.eid for i in stages], "record_hygiene"))
+        return [Finding("problem-list-ckd-stages", "review", f"{len(stages)} different CKD stages are all marked active",
+                        "Only one stage can be current: " + "; ".join(i.row["display"] for i in stages)
+                        + ". The problem list needs updating by the clinician.", [i.eid for i in stages], "record_hygiene")]
+    return []
 
-    # Low blood pressure while on blood-pressure medicines (falls risk; prompts a medication review)
+
+def check_low_bp_on_treatment(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Systolic BP below 90 on the last two readings while on blood-pressure medicines prescribed in the last 12 months."""
     sbp = series(rec, rules["analytes"]["sbp"]["loinc"])
-    # count only medicines actually prescribed in the last 12 months (stale "active" entries are reported separately)
     recent_cut = (rec.as_of - timedelta(days=365)).isoformat()
-    bp_meds = [m for m in active if re.search(ANTIHYPERTENSIVE, m.ingredient) and m.last_prescribed >= recent_cut]
+    bp_meds = [m for m in _active(meds) if re.search(ANTIHYPERTENSIVE, m.ingredient) and m.last_prescribed >= recent_cut]
     if len(sbp) >= 2 and bp_meds and all(p.value < 90 for p in sbp[-2:]):
-        f.append(Finding("low-bp-on-treatment", "review",
-                         f"Systolic blood pressure below 90 on the last two readings while on {len(bp_meds)} blood-pressure medicine(s)",
-                         f"{sbp[-2].value:g} on {sbp[-2].when.date()} and {sbp[-1].value:g} on {sbp[-1].when.date()}; active: "
-                         + "; ".join(m.medication for m in bp_meds) + ". A clinician should review.",
-                         [sbp[-2].eid, sbp[-1].eid] + [m.evidence[0] for m in bp_meds], "low_bp_rule"))
+        return [Finding("low-bp-on-treatment", "review",
+                        f"Systolic blood pressure below 90 on the last two readings while on {len(bp_meds)} blood-pressure medicine(s)",
+                        f"{sbp[-2].value:g} on {sbp[-2].when.date()} and {sbp[-1].value:g} on {sbp[-1].when.date()}; active: "
+                        + "; ".join(m.medication for m in bp_meds) + ". A clinician should review.",
+                        [sbp[-2].eid, sbp[-1].eid] + [m.evidence[0] for m in bp_meds], "low_bp_rule")]
+    return []
 
-    # Drug allergy check: an active medicine that matches a recorded medication allergy
+
+def check_allergy_conflicts(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """An active medicine that matches a recorded medication allergy (or its drug class)."""
+    f: list[Finding] = []
     allergies = [i for i in rec.of("allergy") if "medication" in (i.row.get("category") or "")
                  and (i.row.get("clinical_status") or "active") == "active"]
     for al in allergies:
@@ -452,19 +509,32 @@ def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], 
         for cls, members in ALLERGY_CLASSES.items():
             if cls in words:
                 related |= set(members)
-        for m in active:
+        for m in _active(meds):
             if any(w in m.ingredient or w in m.medication.lower() for w in related):
                 f.append(Finding("allergy-match", "high", f"{m.medication} is active and a {al.row['substance']} allergy is recorded",
                                  f"Recorded reaction: {al.row.get('reaction') or 'not stated'}; criticality: "
                                  f"{al.row.get('criticality') or 'not stated'}. A clinician or pharmacist should review.",
                                  [al.eid] + m.evidence[:1], "allergy_check"))
+    return f
 
-    # Identity: records waiting for a person are not in this review
-    for p in rec.pending:
-        f.append(Finding("identity-pending", "review", f"Possible {p['system']} record {p['record_id']} is waiting for identity review",
-                         "It is NOT included in this summary until a person confirms it belongs to this patient.", [], None))
-    order = {"high": 0, "review": 1, "info": 2}
-    return sorted(f, key=lambda x: order[x.severity])
+
+def check_identity_pending(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Records that may belong to this patient but wait for a person: they are NOT used."""
+    return [Finding("identity-pending", "review", f"Possible {p['system']} record {p['record_id']} is waiting for identity review",
+                    "It is NOT included in this summary until a person confirms it belongs to this patient.", [], None)
+            for p in rec.pending]
+
+
+CHECKS = [check_kidney_stage, check_egfr_decline, check_renal_dosing, check_potassium_on_acei, check_diabetes_control,
+          check_stale_medications, check_duplicate_ingredients, check_range_crossings, check_monitoring_gaps,
+          check_lab_conflicts, check_problem_list, check_low_bp_on_treatment, check_allergy_conflicts, check_identity_pending]
+SEVERITY_ORDER = {"high": 0, "review": 1, "info": 2}
+
+
+def run_rules(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """All checks, ordered by the rule level each guideline assigns (used by the patient view and the tests)."""
+    f = [x for check in CHECKS for x in check(rec, tr, meds, rules)]
+    return sorted(f, key=lambda x: SEVERITY_ORDER[x.severity])
 
 
 # --------------------------------------------------------------------------- timeline

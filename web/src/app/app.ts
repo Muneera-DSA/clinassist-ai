@@ -79,9 +79,9 @@ export class App implements OnInit {
     { path: '/sources', label: 'Fragmented data', hint: 'SQL Server · MySQL · PostgreSQL via Zetaris', icon: '' },
     { path: '/identity', label: 'Identity resolution', hint: 'Matcher + Meterless World Model', icon: '' },
     { path: '/patient', label: 'Patient review', hint: '3-year evidence-linked analysis', icon: '' },
-    { path: '/ask', label: 'Ask ClinAssist', hint: 'Scout → agent loop → verifier', icon: '' },
+    { path: '/ask', label: 'Ask ClinAssist', hint: 'Meterless supervises · Nemotron leads', icon: '' },
     { path: '/evaluation', label: 'Evaluation', hint: 'How we tested it', icon: '' },
-    { path: '/audit', label: 'Audit trail', hint: 'Every run, step by step', icon: '' },
+    { path: '/audit', label: 'Audit trail', hint: 'Meterless World Model record', icon: '' },
   ];
   readonly liveOk = computed(() => this.state.status()?.mode === 'zetaris' && !!this.state.status()?.zetaris.ok);
   readonly modeLabel = computed(() => {

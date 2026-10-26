@@ -1,12 +1,12 @@
 // ClinAssist AI: record patient identities in the Meterless World Model.
 //
 // Input : data/derived/identity/identity_links.json   (from run_matching.py)
-//         data/derived/identity/review_decisions.json (optional, from wm/review.ts)
+//         data/derived/identity/review_decisions.json (optional, from meterless/world/review.ts)
 // Output: data/derived/world/.world/clinassist.json   (event-sourced World Model store)
 //         data/derived/world/patient_identity.json    (one entry per hospital patient)
 //
 // Run from the project folder:
-//   npx.cmd tsx wm/build_world.ts
+//   npx.cmd tsx meterless/world/build_world.ts
 //
 // The world is rebuilt from scratch on every run: the source systems and the
 // recorded reviewer decisions are the truth; the World Model is the shared,
@@ -16,7 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { WorldModel } from "../vendor/meterless-world-model/index.ts";
+import { WorldModel } from "../vendor/world-model/index.ts";
 
 type Link = {
   system: "laboratory" | "pharmacy";

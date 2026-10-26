@@ -13,6 +13,14 @@ for i in $(seq 1 120); do
   "${SA[@]}" -Q "SELECT 1" >/dev/null 2>&1 && break
   sleep 2
 done
+# After a restart, existing databases (including a half-built hospital_ehr) are still being recovered for a while.
+# Wait until every database is ONLINE before checking or dropping anything.
+echo "[clinassist] waiting for all databases to be online..."
+for i in $(seq 1 90); do
+  LEFT=$("${SA[@]}" -h -1 -W -Q "SET NOCOUNT ON; SELECT COUNT(*) FROM sys.databases WHERE state_desc <> 'ONLINE'" 2>/dev/null | tr -d '[:space:]')
+  [ "$LEFT" = "0" ] && break
+  sleep 2
+done
 
 DONE=$("${SA[@]}" -h -1 -W -Q "SET NOCOUNT ON; SELECT CASE WHEN OBJECT_ID('master.dbo.clinassist_load_complete') IS NULL THEN 0 ELSE 1 END" 2>/dev/null | tr -d '[:space:]')
 if [ "$DONE" != "1" ]; then

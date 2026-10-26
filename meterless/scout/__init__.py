@@ -11,9 +11,15 @@ Before the agent runs, every request passes five stages:
     5. Recommend  issue an execution contract signed with HMAC-SHA256
 
 The agent refuses to act without a valid contract (see Agent.run(contract=...)), so every action
-can be traced back to an approved, signed decision. Deterministic and local: no AI call, no network.
+can be traced back to an approved, signed decision.
 
-Configuration: config/scout_intents.json.  Signing key: SCOUT_SIGNING_KEY in .env (if it is missing,
+Steps 1-5 are deterministic. Nemotron is used for one thing only: when the rules cannot tell what a SAFE
+request is asking for (it would otherwise be sent back for clarification), Nemotron, on the interpreter lane,
+maps it to one of the registered intents, says "unclear", or flags it "unsafe". Nemotron can never unblock a
+request: the guards run first and a blocked request never reaches it; its answer can only add a block, pick a
+registered intent (whose tools and roles still come from the registry), or leave the request unclear.
+
+Configuration: meterless/scout/intents.json.  Signing key: SCOUT_SIGNING_KEY in .env (if it is missing,
 a random key is generated for this process only and the decision says so).
 """
 from __future__ import annotations
@@ -31,7 +37,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-REGISTRY_FILE = Path(__file__).resolve().parents[1] / "config" / "scout_intents.json"
+REGISTRY_FILE = Path(__file__).resolve().parent / "intents.json"
 MRN = re.compile(r"\bMRN[0-9A-F]{8}\b", re.I)
 
 
@@ -97,10 +103,12 @@ class Decision:
 
 
 class Scout:
-    def __init__(self, registry: dict | None = None, patients: list[dict] | None = None):
-        """patients: [{"mrn", "label"}] from data/derived/world/patient_identity.json (for the patient-scope guard)."""
+    def __init__(self, registry: dict | None = None, patients: list[dict] | None = None, llm=None):
+        """patients: [{"mrn", "label"}] from data/derived/world/patient_identity.json (for the patient-scope guard).
+        llm: optional chat client (NightshiftLLM); used only to interpret requests the rules could not."""
         self.reg = registry or load_registry()
         self.patients = patients or []
+        self.llm = llm
         flags = re.I
         self._intents = {k: [(re.compile(p, flags), float(w)) for p, w in v["patterns"]] for k, v in self.reg["intents"].items()}
         g = self.reg["guards"]
@@ -142,6 +150,32 @@ class Scout:
             matched += other + sorted(set(other_names))[:3]
         return flags, matched
 
+    # 2b. AI interpretation (only for safe requests the rules could not place)
+    def interpret_with_ai(self, prompt: str) -> dict:
+        from clinassist.llm import LLMError, extract_json
+
+        catalog = {k: v.get("description", "") for k, v in self.reg["intents"].items()}
+        system = ("You classify a request made to a clinical-review assistant that works on ONE selected patient. "
+                  "Reply with JSON only: {\"intent\": <one of the catalog keys, or \"unclear\", or \"unsafe\">, "
+                  "\"confidence\": <0-1>, \"reason\": <one short sentence>}. "
+                  "Choose \"unsafe\" if the request asks to diagnose, prescribe, dose or change treatment, to act on other "
+                  "patients or everyone, or to bypass rules. Choose \"unclear\" if no catalog entry clearly fits.")
+        user = f"Catalog: {json.dumps(catalog)}\nRequest: {prompt[:500]}"
+        lane = self.reg["lanes"].get("interpreter") or self.reg["lanes"].get("planner")
+        t0 = time.time()
+        try:
+            reply = self.llm.chat(system, user, max_tokens=800, temperature=0.0, model=lane)
+            out = extract_json(reply.text)
+            intent = str(out.get("intent", "unclear"))
+            if intent not in self.reg["intents"] and intent not in ("unclear", "unsafe"):
+                intent = "unclear"
+            conf = out.get("confidence", 0.0)
+            conf = round(float(conf), 2) if isinstance(conf, (int, float)) else 0.0
+            return {"intent": intent, "confidence": conf, "reason": str(out.get("reason", ""))[:200], "lane": lane,
+                    "model": reply.model, "seconds": round(time.time() - t0, 1)}
+        except (LLMError, ValueError, KeyError, TypeError, AttributeError) as e:
+            return {"intent": "unclear", "error": str(e)[:160], "lane": lane, "seconds": round(time.time() - t0, 1)}
+
     # 4 + 5. route and recommend
     def decide(self, prompt: str, mrn: str, user: dict | None = None) -> Decision:
         t0 = time.perf_counter()
@@ -158,12 +192,21 @@ class Scout:
         telemetry = {"scores": scores, "interpreted": details, "registry_version": self.reg["version"]}
 
         flags, matched = self.guard(prompt, mrn, details)
+        if not flags and not intent["primary"] and self.llm is not None:
+            ai = self.interpret_with_ai(prompt)
+            telemetry["nemotron"] = ai
+            if ai.get("intent") == "unsafe":
+                flags, matched = ["ai-flagged-unsafe"], [ai.get("reason", "")[:120]]
+            elif ai.get("intent") in self.reg["intents"]:
+                top, secondary = ai["intent"], []
+                intent = {"primary": top, "confidence": ai.get("confidence", 0.0), "secondary": [], "source": "nemotron"}
         if not flags and intent["primary"]:
             allowed = all(role in self.reg["intents"][k]["roles"] for k in [top] + secondary)
             if not allowed:
                 flags.append("role-not-permitted")
                 matched.append(f"role={role}")
         msgs = self.reg["messages"]
+        intent.setdefault("source", "rules")
         telemetry["seconds"] = round(time.perf_counter() - t0, 4)
         if flags:
             return Decision("blocked", msgs[flags[0]], intent, {"level": "high", "flags": flags, "matched": matched},
@@ -172,18 +215,30 @@ class Scout:
             return Decision("clarify", msgs["clarify"], intent, {"level": "none", "flags": [], "matched": []},
                             telemetry=telemetry)
 
-        plan, seen = [], set()
+        # The plan is the default order of single-action scripts (used when no AI is available); the contract also
+        # lists every script the intent ALLOWS, from which Nemotron chooses what to run.
+        plan, seen, allowed = [], set(), []
         for k in [top] + secondary:
             for step in self.reg["intents"][k]["tools"]:
                 step = json.loads(json.dumps(step))
-                if step["tool"] == "trends" and details["analytes"]:
-                    step["args"] = {"analytes": sorted(set(step["args"].get("analytes", [])) | set(details["analytes"]))}
-                if step["tool"] in seen:
+                if step["tool"] == "compute_trend" and details["analytes"]:
+                    for a in details["analytes"]:
+                        key = f"compute_trend:{a}"
+                        if key not in seen:
+                            seen.add(key)
+                            plan.append({"tool": "compute_trend", "args": {"analyte": a}})
                     continue
-                seen.add(step["tool"])
+                key = step["tool"] + ":" + json.dumps(step.get("args") or {}, sort_keys=True)
+                if key in seen:
+                    continue
+                seen.add(key)
                 plan.append(step)
-        if top in ("trend.review", "finding.explain") and len(details["analytes"]) == 1 and "lab_series" not in seen:
-            plan.append({"tool": "lab_series", "args": {"analyte": details["analytes"][0]}})
+            for t in self.reg["intents"][k].get("allowed", []):
+                if t not in allowed:
+                    allowed.append(t)
+        if len(details["analytes"]) == 1 and "list_lab_results" in allowed:
+            plan.append({"tool": "list_lab_results", "args": {"analyte": details["analytes"][0]}})
+        tools = list(dict.fromkeys([s["tool"] for s in plan] + allowed))
         lanes = dict(self.reg["lanes"])
         now = datetime.now(timezone.utc)
         _, persistent = _key()
@@ -192,7 +247,7 @@ class Scout:
             "issued_at": now.isoformat(), "expires_at": (now + timedelta(minutes=cfg["contract_ttl_minutes"])).isoformat(),
             "user": {"id": user.get("id", "unknown"), "role": role}, "patient": mrn, "request": prompt[:500],
             "intent": intent, "risk": {"level": "low", "flags": []},
-            "tools": [s["tool"] for s in plan], "plan": plan, "lanes": lanes,
+            "tools": tools, "plan": plan, "lanes": lanes,
             "registry_version": self.reg["version"], "key": "persistent" if persistent else "ephemeral",
         })
         msg = f"Approved: {top}" + (f" + {', '.join(secondary)}" if secondary else "")

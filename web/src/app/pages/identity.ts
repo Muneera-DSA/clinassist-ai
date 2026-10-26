@@ -38,6 +38,7 @@ import { EngineBadge, PatientPicker } from '../ui/components';
             <div class="row mb">
               <button class="btn sm" [class.primary]="filter() === 'pending'" (click)="filter.set('pending')">Waiting ({{ v.queue.length - reviewedCount() }})</button>
               <button class="btn sm" [class.primary]="filter() === 'all'" (click)="filter.set('all')">All ({{ v.queue.length }})</button>
+              <button class="btn sm" [disabled]="busy()" (click)="rematch()" title="Runs the matcher again over all three systems through Zetaris, as a job approved and recorded by Meterless">Re-run matching (supervised batch job)</button>
             </div>
             @if (actionMsg()) { <div class="notice ok mb small">{{ actionMsg() }}</div> }
             @if (actionErr()) { <div class="notice bad mb small">{{ actionErr() }}</div> }
@@ -161,6 +162,21 @@ export class IdentityPage implements OnInit {
       if (l.mrn) { this.state.selectPatient(l.mrn); }
       await this.state.refreshPatients();
     } catch (e) { this.actionErr.set(errorText(e)); }
+    this.busy.set(false);
+  }
+
+  async rematch(): Promise<void> {
+    if (!this.reviewer.trim()) { this.actionErr.set('Enter your name first: a named person must start the matching job.'); return; }
+    this.busy.set(true);
+    this.actionErr.set(null);
+    this.actionMsg.set('Matching job running under Meterless supervision...');
+    try {
+      const r = await this.api.rematch(this.reviewer.trim());
+      this.actionMsg.set(`Matching re-run and recorded by Meterless (run ${r.meterless_run}). World Model: ${r.summary?.events ?? '?'} events, ` +
+        `${r.summary?.pending_review ?? '?'} links waiting for review.`);
+      await this.load();
+      await this.state.refreshPatients();
+    } catch (e) { this.actionErr.set(errorText(e)); this.actionMsg.set(null); }
     this.busy.set(false);
   }
 

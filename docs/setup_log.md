@@ -19,14 +19,15 @@ No passwords, keys or tokens are reproduced here.
 | Three fragmented source systems (hospital / lab / pharmacy) | ✅ Built and running in Docker; rebuilt 25 Oct with blood-pressure values and an allergies table |
 | Sources registered in Zetaris (`hospital_ehr`, `lab_lis`, `pharmacy_rx`) | ✅ 12 tables; `eval/audit_sources.py` → **ALL MATCH** |
 | Patient matching (`clinassist/matching.py`, strict cut-off 11.5) | ✅ Lab 99 auto + 13 review, pharmacy 91 auto + 17 review, 0 wrong merges |
-| Meterless World Model integration (`wm/`) | ✅ 190 links confirmed, 30 pending human review, with provenance |
+| Meterless World Model integration (`meterless/world/`) | ✅ 190 links confirmed, 30 pending human review, with provenance |
 | Longitudinal analytics and rules (`clinassist/analysis.py`) | ✅ 36 rule scenarios + 8 ingredient checks pass (`tests/test_rules.py`) |
-| Meterless Scout Intent (`clinassist/scout.py`, our implementation of the spec) | ✅ Built 26 Oct; held-out: 0 of 14 unsafe requests reached the agent, 0 of 16 normal requests blocked; agent refuses unsigned plans (12/12 checks) |
+| Meterless Scout Intent (`meterless/scout/`, our implementation of the spec) | ✅ Built 26 Oct; held-out: 0 of 14 unsafe requests reached the agent, 0 of 16 normal requests blocked; agent refuses unsigned plans (12/12 checks) |
 | Agent loop + groundedness verifier (`clinassist/agent.py`) | ✅ Built; verifier catches 87–91% of planted errors, 0 of 136 correct summaries rejected |
 | Meterless Nightshift runtime (port 8088) | ✅ v1.2.1, answering; smoke test 4/4 PASS |
 | Nightshift lane manager (`meterlessd`) | ⚠️ Not answering on 25 Oct evening, so lanes cannot be viewed or changed (see §7) |
 | NVIDIA Nemotron via Nightshift | ✅ Answering; Nightshift chooses the model (see §7) |
-| Nemotron benchmark (`eval/bench_llm.py`), second "judge" check | ⏳ Not run / not built yet |
+| Nemotron benchmark (`eval/bench_llm.py`) | ⚠️ First run 0/6 verified, fixes made (26 Oct); re-run pending |
+| Meterless supervisor + Nemotron as the boss (26 Oct evening) | ⏳ Built and tested offline; laptop run pending (see the 26 Oct evening section) |
 | Backend API, dashboard, README | ⏳ Developers |
 
 How to rebuild everything in order, the outputs, and what the demo may claim: `docs/ml_handoff.md`.
@@ -82,17 +83,17 @@ review queue). `clinical-demo.ts` used hard-coded ID mappings, so it did not yet
 exercise matching.
 
 **Integration in this project (done 24–25 Oct).** The engine's source is vendored in
-`vendor/meterless-world-model/` (declared as pre-existing code). `wm/build_world.ts` writes every
+`vendor/meterless-world-model/` (declared as pre-existing code). `meterless/world/build_world.ts` writes every
 patient, lab record and pharmacy record as an entity, auto-links as `same_person_as` and uncertain
 matches as `possible_same_person` (pending review), with provenance on every write; it builds in
-memory and saves once (much faster on Windows). `wm/review.ts` records a reviewer's approve/reject
+memory and saves once (much faster on Windows). `meterless/world/review.ts` records a reviewer's approve/reject
 decision with their name as the source, and a reviewer always overrides the matcher (confidence 1.0
 vs at most 0.99). Output: `data\derived\world\patient_identity.json`.
 
 ```powershell
 npm.cmd install
-npx.cmd tsx wm/build_world.ts                  # 112 patients, 190 links, 30 pending review
-npx.cmd tsx wm/review.ts list
+npx.cmd tsx meterless/world/build_world.ts                  # 112 patients, 190 links, 30 pending review
+npx.cmd tsx meterless/world/review.ts list
 ```
 
 The engine's own name-similarity resolver was **not** used for patients: in `eval/eval_matching.py` it
@@ -250,8 +251,55 @@ After the fixes the real Kendrick draft from the benchmark passes the checker; v
 (87-91% of planted errors caught, 0/136 correct summaries rejected); tests 44/44 and 14/14. The benchmark must be
 re-run to measure the AI path.
 
+**Nemotron's role widened (26 Oct, afternoon).** Python still computes; Nemotron now does more of the reasoning:
+
+| | What Nemotron does | Safety and checks | Tests |
+|---|---|---|---|
+| Investigates step by step (`Agent.investigate`) | Chooses tools, reads a summary of each result, then decides the next calls or stops (up to 3 steps, 8 calls) | Only tools in the Scout contract; repeated calls dropped; falls back to the contract's plan if it fails | `tests/test_scout_agent.py` 15/15 |
+| Clinical reasoning (`WRITER_SYSTEM`) | Writes three sections: summary, **How the findings connect**, **Questions for the clinician** | Every bullet cited and number-checked; a "connection" must cite evidence from at least two different findings (`connection-not-grounded`); questions may not order treatment | `tests/test_reasoning.py` 5/5 |
+| Understands unclear requests (`Scout.interpret_with_ai`) | When the rules cannot tell what a safe request asks, maps it to a registered intent, "unclear" or "unsafe" (interpreter lane) | Guards run first: a blocked request never reaches Nemotron; it can add a block but never remove one; an intent outside the registry counts as unclear; role rules still apply | `tests/test_scout_ai.py` 9/9; measure with `eval/eval_scout.py --ai` |
+
 **Web app.** `server/` (standard-library Python API, live agent runs as Server-Sent Events, run history in
 `data/derived/runs/`) and `web/` (Angular 20; first compile check still pending at this commit). How to run and demo: `docs/run_the_demo.md`.
+
+---
+
+## 26 Oct (evening): Meterless supervises everything, Nemotron is the boss
+
+The team agreed the flow: **doctor → UI → Meterless → (Zetaris data / Nightshift → Nemotron)**. Nothing happens without
+Meterless knowing, approving and recording it.
+
+**Code split.** Everything Meterless now lives in `meterless/`:
+
+| Folder | What | Who wrote it |
+|---|---|---|
+| `meterless/vendor/world-model/`, `meterless/vendor/hmem/` | Meterless World Model and H-MEM engines, copied unchanged | Meterless (declared as pre-existing code) |
+| `meterless/scout/` | Scout Intent: our implementation of the Meterless spec | NexAgent team |
+| `meterless/gateway/server.ts` | Small local HTTP gateway that runs the two engines for the Python app (port 8090) | NexAgent team |
+| `meterless/supervisor/` | The gate every action passes through | NexAgent team |
+| `meterless/world/` | Identity World Model build and reviewer decisions | NexAgent team |
+
+Old paths removed: `vendor/`, `wm/`, `clinassist/scout.py`, `config/scout_intents.json`.
+
+**How a request runs.**
+
+1. Meterless records the request in the World Model (one store per run: `data/derived/world/runs/<run>/`).
+2. Scout decides and signs a contract; the decision is recorded.
+3. Every later action goes through `Supervisor.act`: recorded as requested → checked against the contract (right patient,
+   allowed script, data keys inside the patient's linked records, allowed Nightshift lane) → approval or refusal recorded →
+   run → result recorded. If the gateway is down nothing runs (fails closed).
+4. **Nemotron is the boss.** The catalog of single-action Python scripts (`clinassist/scripts/`, 25 scripts) is loaded into
+   Meterless H-MEM and attached to Nemotron's prompt. Nemotron chooses which scripts to run, reads the results, decides what
+   to run next, and writes the answer. Scripts only fetch, list, compute, check one criterion ("criterion met" as a fact) or
+   rank; they never decide.
+5. Meterless always runs the deterministic fact-check (`verify_draft`) and a second Nemotron reviewer (judge). Problems go back
+   to Nemotron (missed HIGH finding → back to the boss; uncited or unsupported sentence → redraft) or are escalated.
+6. Identity decisions and the matching batch job are supervised and recorded the same way (role-checked).
+
+**Tested so far (offline, with stand-ins for Zetaris and Nemotron and the real Meterless engines):**
+`tests/test_scout_agent.py` rewritten for the new design, 20 checks. A full "Why is his eGFR flagged?" run produced
+25 supervised actions and 178 World Model events. **Not yet verified on the laptop:** the real Nemotron run, the real
+Zetaris sources, and the Angular compile.
 
 ---
 

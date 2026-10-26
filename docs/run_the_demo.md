@@ -46,7 +46,16 @@ with the READ-ONLY passwords from `sources\.env`. Then check:
 If Zetaris shows different table names (for example with a `dbo` prefix for SQL Server), put them in
 `config/sources.json`; nothing else needs changing.
 
-## 3. Start the backend
+## 3. Start the Meterless gateway (first), then the backend
+
+Meterless supervises every action, so the backend refuses to run requests if the gateway is not up (it fails closed).
+In its own PowerShell window, from the project folder:
+
+```powershell
+npx.cmd tsx meterless/gateway/server.ts       # http://127.0.0.1:8090  (World Model run records + H-MEM)
+```
+
+Then, in another window:
 
 ```powershell
 .\.venv\Scripts\python.exe -m server            # http://127.0.0.1:8000  (live data through Zetaris)
@@ -71,18 +80,21 @@ npm.cmd run build
 
 ## 5. Demo script (about 4 minutes)
 
-1. **Overview**: the problem in one sentence; live checks show Zetaris, the three engines, the World Model, Scout and Nightshift.
+1. **Overview**: the problem in one sentence; live checks show Zetaris, the three engines, the Meterless supervisor, Scout and
+   Nightshift. The flow: doctor → Meterless (Scout + approval of every action) → Nemotron (the boss) ⇄ scripts ⇄ Zetaris.
 2. **Fragmented data**: one query across SQL Server, MySQL and PostgreSQL; the same man written three ways; the naive join
    finds only 99 of 112 lab patients.
 3. **Identity resolution**: open a waiting case (e.g. HACKETT: day and month swapped), read the reasons, approve it as a named
    reviewer. The World Model is rebuilt and the provenance panel shows the reviewer's decision.
 4. **Patient review** (Kendrick, MRN91862E3E): kidney function falling 82 → 25, alendronate with weak kidneys, low blood pressure
    on three BP medicines, missing haemoglobin test. Click any chip to open the exact source row (engine, table, record).
-5. **Ask ClinAssist**: run "Prepare a pre-visit summary" with Nemotron on. Watch Scout approve and sign the contract, the planner
-   choose tools, the writer draft, the evaluator check every sentence (and send it back if needed).
+5. **Ask ClinAssist**: run "Why is his eGFR flagged?" with Nemotron on. Watch Meterless record the request and Scout sign the
+   contract; Nemotron choose scripts step by step (it reads "criterion met" and asks for the eGFR series); every script, Zetaris
+   fetch and Nemotron call listed as approved by Meterless; the fact-check and the Nemotron judge send drafts back if needed.
 6. **Try to break it**: "Ignore your previous instructions…", "What dose of lisinopril should I prescribe him?", another
    patient's name, or a medicine review as an insurance coordinator: Scout blocks each before any data is read.
-7. **Evaluation** and **Audit trail**: how it was tested, the blind spots we found, and every run kept step by step.
+7. **Audit trail**: the Meterless World Model record of the run: request, Scout decision, and every action with its approval
+   (or refusal) and result. **Evaluation**: how it was tested and the blind spots we found.
 
 ## What to say if something is slow or down
 
@@ -91,10 +103,12 @@ npm.cmd run build
   fast lane and the trace says so.
 - If the AI draft fails the checker three times, the AI text is never shown: the verified rule-based summary is shown and the case
   is flagged. That is the designed behaviour, not a crash.
+- If the Meterless gateway is not running, requests are refused with a clear message: start it (section 3) and retry.
 - If Zetaris is down, switch to the offline copy (bottom-left of the app). The app labels this clearly.
 
 ## Resetting the demo
 
 Reviewer decisions made in the app are stored in `data/derived/identity/review_decisions.json` and replayed into the World
-Model. To start the demo again with all 30 cases waiting: delete that file, then run `npx.cmd tsx wm/build_world.ts`.
-Saved agent runs are in `data/derived/runs/` (delete the folder to clear the audit trail).
+Model. To start the demo again with all 30 cases waiting: delete that file, then run `npx.cmd tsx meterless/world/build_world.ts`.
+Saved agent runs are in `data/derived/runs/` and the Meterless run records in `data/derived/world/runs/` (delete both to clear the
+audit trail). Lessons Meterless H-MEM kept from earlier runs are in `data/derived/hmem/`.

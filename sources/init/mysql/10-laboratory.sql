@@ -11,7 +11,7 @@ CREATE TABLE lab_patients (
   `gender` VARCHAR(16)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 LOAD DATA INFILE '/var/lib/mysql-files/lab_patients.csv' INTO TABLE lab_patients
-  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n' IGNORE 1 LINES
+  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\r\n' IGNORE 1 LINES
   (@lab_patient_id, @surname, @forenames, @dob, @gender)
   SET `lab_patient_id` = NULLIF(TRIM(TRAILING '\r' FROM @lab_patient_id), ''),
       `surname` = NULLIF(TRIM(TRAILING '\r' FROM @surname), ''),
@@ -33,7 +33,7 @@ CREATE TABLE lab_results (
   `reference_range` VARCHAR(16)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 LOAD DATA INFILE '/var/lib/mysql-files/lab_results.csv' INTO TABLE lab_results
-  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n' IGNORE 1 LINES
+  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\r\n' IGNORE 1 LINES
   (@result_id, @lab_patient_id, @accession_no, @loinc_code, @test_name, @value_num, @value_text, @unit, @status, @collected_at, @reported_at, @reference_range)
   SET `result_id` = NULLIF(TRIM(TRAILING '\r' FROM @result_id), ''),
       `lab_patient_id` = NULLIF(TRIM(TRAILING '\r' FROM @lab_patient_id), ''),
@@ -58,7 +58,7 @@ CREATE TABLE lab_reports (
   `result_ids` VARCHAR(500)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 LOAD DATA INFILE '/var/lib/mysql-files/lab_reports.csv' INTO TABLE lab_reports
-  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\n' IGNORE 1 LINES
+  CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '"' LINES TERMINATED BY '\r\n' IGNORE 1 LINES
   (@report_id, @lab_patient_id, @loinc_code, @report_name, @status, @issued_at, @effective_at, @result_ids)
   SET `report_id` = NULLIF(TRIM(TRAILING '\r' FROM @report_id), ''),
       `lab_patient_id` = NULLIF(TRIM(TRAILING '\r' FROM @lab_patient_id), ''),

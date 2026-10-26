@@ -101,13 +101,14 @@ BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+")
 def final_answer(text: str, marker: str = "#") -> str:
     """Keep only the answer when a reasoning model thinks aloud before it.
 
-    1. If there is a heading line (starts with `marker`), keep from the LAST one: thinking may mention the
-       heading, but the answer starts at the final heading.
+    1. If there is a top-level heading line ('# ...'), keep from the LAST one: thinking may mention the
+       heading, but the answer starts at the final top-level heading (its '## ...' sub-sections are kept).
     2. Otherwise keep the trailing block of bullet lines (the answer is the bulleted list at the end) and
        add the heading. 3. Otherwise return the text unchanged (the checker will judge it).
     """
     lines = text.strip().splitlines()
-    heads = [i for i, l in enumerate(lines) if l.lstrip().startswith(marker)]
+    # top-level headings only ('# x', not '## x'): the answer can have sub-sections under its main heading
+    heads = [i for i, l in enumerate(lines) if l.lstrip().startswith(marker) and not l.lstrip().startswith(marker * 2)]
     if heads:
         return "\n".join(lines[heads[-1]:]).strip()
     start, style = None, None

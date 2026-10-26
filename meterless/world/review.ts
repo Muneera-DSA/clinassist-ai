@@ -1,11 +1,11 @@
 // ClinAssist AI: record a reviewer's decision on a pending identity match.
 //
-//   npx.cmd tsx wm/review.ts list
-//   npx.cmd tsx wm/review.ts approve laboratory LPB76ACC1 --by "Dr Reviewer" --note "DOB swap confirmed with patient"
-//   npx.cmd tsx wm/review.ts reject  pharmacy  RX298B1A2 --by "Dr Reviewer"
+//   npx.cmd tsx meterless/world/review.ts list
+//   npx.cmd tsx meterless/world/review.ts approve laboratory LPB76ACC1 --by "Dr Reviewer" --note "DOB swap confirmed with patient"
+//   npx.cmd tsx meterless/world/review.ts reject  pharmacy  RX298B1A2 --by "Dr Reviewer"
 //
 // Decisions are appended to data/derived/identity/review_decisions.json and
-// replayed into the World Model by wm/build_world.ts, with the reviewer as provenance.
+// replayed into the World Model by meterless/world/build_world.ts, with the reviewer as provenance.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -40,4 +40,4 @@ if (!by) { console.error("--by <reviewer name> is required: every decision needs
 
 decisions.push({ system, record_id: recordId, mrn: link.mrn, action: cmd, by, at: new Date().toISOString(), note: flag("--note") });
 writeFileSync(file, JSON.stringify(decisions, null, 2), "utf-8");
-console.log(`Recorded: ${cmd} ${system} ${recordId} -> ${link.mrn} by ${by}. Now run: npx.cmd tsx wm/build_world.ts`);
+console.log(`Recorded: ${cmd} ${system} ${recordId} -> ${link.mrn} by ${by}. Now run: npx.cmd tsx meterless/world/build_world.ts`);

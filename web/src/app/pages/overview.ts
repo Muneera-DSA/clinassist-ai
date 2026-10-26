@@ -14,10 +14,12 @@ import { Check, EngineBadge } from '../ui/components';
         <div class="eyebrow">Open Agent Hackathon 2026 · Reasoning Architecture</div>
         <h1>A patient's story is split across systems that don't talk to each other.</h1>
         <p>The hospital, the outside laboratory and the pharmacy each keep their own records, on different databases, with
-          different patient numbers and differently written names. ClinAssist reads all three through <b>Zetaris</b>, works out
-          which records are the same person and records how it decided in the <b>Meterless World Model</b>, analyses three
-          years of history, and lets <b>NVIDIA Nemotron</b> (through <b>Meterless Nightshift</b>) write a summary that a strict
-          checker verifies sentence by sentence. Every request first passes <b>Scout</b>. It never diagnoses or prescribes.</p>
+          different patient numbers and differently written names. When a doctor asks a question, <b>Meterless</b> supervises
+          everything: <b>Scout</b> checks the request and signs a contract, then every action is approved against that contract
+          and recorded in the <b>Meterless World Model</b>. <b>NVIDIA Nemotron</b> (through <b>Meterless Nightshift</b>) leads
+          the analysis: it chooses which single-purpose scripts to run, reads their results, decides what they mean and writes
+          the answer. Data comes only through <b>Zetaris</b>. A fact-check and a second Nemotron reviewer verify every sentence.
+          It never diagnoses or prescribes.</p>
         <div class="row mt">
           <a class="btn primary" routerLink="/ask">Run the agent live →</a>
           <a class="btn" routerLink="/sources">Start the guided demo</a>
@@ -31,7 +33,8 @@ import { Check, EngineBadge } from '../ui/components';
             <div class="row sysline"><span class="dot" [class.ok]="!!st.zetaris.patients?.[k]" [class.bad]="!st.zetaris.ok"></span>
               <ca-engine [system]="k" /><span class="muted small">{{ st.systems[k]?.label }} · {{ st.zetaris.patients?.[k] ?? '—' }} patients</span></div>
           }
-          <ca-check [ok]="!!st.world_model.ok" label="Meterless World Model" [detail]="(st.world_model.events ?? 0) + ' events · ' + (st.world_model.pending_review ?? 0) + ' links awaiting review'" />
+          <ca-check [ok]="!!st.meterless?.ok" label="Meterless supervisor (gateway)" [detail]="st.meterless?.ok ? ('World Model + H-MEM · ' + (st.meterless.catalog ?? 0) + ' scripts in memory · ' + (st.meterless.lessons ?? 0) + ' lessons') : (st.meterless?.error || 'not running')" />
+          <ca-check [ok]="!!st.world_model.ok" label="Meterless World Model (identity)" [detail]="(st.world_model.events ?? 0) + ' events · ' + (st.world_model.pending_review ?? 0) + ' links awaiting review'" />
           <ca-check [ok]="st.scout.ok" label="Scout" [detail]="st.scout.intents.length + ' intents · ' + st.scout.signing_key + ' signing key'" />
           <ca-check [ok]="st.nightshift.ok" label="Nightshift → Nemotron" [detail]="st.nightshift.ok ? ((st.nightshift.models?.length ?? 0) + ' lanes: ' + (st.nightshift.models ?? []).join(', ')) : (st.nightshift.error || '')" />
           <button class="btn sm mt" (click)="state.refreshStatus(true)">Re-check now</button>
@@ -41,25 +44,29 @@ import { Check, EngineBadge } from '../ui/components';
 
     <h2 class="sec">How a request flows</h2>
     <div class="flow">
-      <div class="node src">
-        <div class="nt">Source systems</div>
-        <div class="engines"><ca-engine system="hospital_ehr" /><ca-engine system="lab_lis" /><ca-engine system="pharmacy_rx" /></div>
-        <div class="nd">Hospital EHR · Laboratory · Pharmacy. Separate IDs, name and date formats.</div>
+      <div class="node person"><div class="nt">Doctor</div><div class="nd">Asks in plain words in the ClinAssist UI.</div></div>
+      <div class="arrow">→</div>
+      <div class="node sup" [class.live]="s()?.meterless?.ok">
+        <div class="nt">Meterless — the supervisor</div>
+        <div class="nd"><b>Scout</b> understands the request, blocks unsafe ones and signs a 15-minute contract. Every later action
+          is approved against it and recorded (request → approval → result) in the <b>World Model</b>. Nothing runs without it.</div>
       </div>
-      <div class="arrow">→</div>
-      <div class="node" [class.live]="s()?.zetaris?.ok"><div class="nt">Zetaris</div><div class="nd">One SQL window over three engines. Nothing copied.</div></div>
-      <div class="arrow">→</div>
-      <div class="node" [class.live]="s()?.world_model?.ok"><div class="nt">Matcher + World Model</div><div class="nd">Who is who, with scores, reasons and provenance. Unsure → a person decides.</div></div>
-      <div class="arrow">→</div>
-      <div class="node live"><div class="nt">3-year analysis</div><div class="nd">Theil–Sen trends, guideline rules, gaps, medicines. Evidence id on every fact.</div></div>
-      <div class="arrow">→</div>
-      <div class="node live"><div class="nt">Scout</div><div class="nd">Understands the request, blocks unsafe ones, signs a 15-minute contract.</div></div>
       <div class="arrow">→</div>
       <div class="node loop" [class.live]="s()?.nightshift?.ok">
-        <div class="nt">Agent loop</div>
-        <div class="loopgrid"><span>Planner</span><span>⇄</span><span>Executor</span><span>⇅</span><span></span><span>⇅</span><span>Evaluator</span><span>⇄</span><span>Writer</span></div>
-        <div class="nd">Nemotron writes; a deterministic checker verifies every sentence; failures are repaired or escalated.</div>
+        <div class="nt">Nemotron — the boss</div>
+        <div class="loopgrid"><span>Choose scripts</span><span>⇄</span><span>Read results</span><span>⇅</span><span></span><span>⇅</span><span>Judge</span><span>⇄</span><span>Write</span></div>
+        <div class="nd">Through Nightshift. The script catalog comes from Meterless H-MEM memory. Nemotron makes every decision.</div>
       </div>
+      <div class="arrow">⇄</div>
+      <div class="node live"><div class="nt">Single-action scripts</div><div class="nd">Each does one thing: fetch, list, trend, check a criterion, rank. They report facts; they don't decide.</div></div>
+      <div class="arrow">⇄</div>
+      <div class="node" [class.live]="s()?.zetaris?.ok">
+        <div class="nt">Zetaris</div>
+        <div class="engines"><ca-engine system="hospital_ehr" /><ca-engine system="lab_lis" /><ca-engine system="pharmacy_rx" /></div>
+        <div class="nd">One SQL window over three engines, only for this patient's linked records.</div>
+      </div>
+      <div class="arrow">→</div>
+      <div class="node"><div class="nt">Fact-check</div><div class="nd">Enforced by Meterless: every sentence must cite what a script returned; misses go back to Nemotron.</div></div>
       <div class="arrow">→</div>
       <div class="node person"><div class="nt">Clinician</div><div class="nd">Reviews a cited summary. Decides.</div></div>
     </div>
@@ -98,6 +105,7 @@ import { Check, EngineBadge } from '../ui/components';
     .node.src { border-top-color: var(--accent); min-width: 190px; }
     .node.person { border-top-color: #7a5af8; }
     .node.loop { min-width: 210px; }
+    .node.sup { min-width: 240px; border-color: var(--primary); }
     .nt { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
     .nd { font-size: 12px; color: var(--muted); line-height: 1.45; }
     .engines { display: flex; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; }
@@ -137,8 +145,9 @@ export class OverviewPage implements OnInit {
     { path: '/sources', title: 'Fragmented data, one window', text: 'Three engines, one federated query. The same man written three different ways.' },
     { path: '/identity', title: 'Who is who, safely', text: 'Scores and reasons for every link; a person confirms the uncertain ones in the World Model.' },
     { path: '/patient', title: 'Three years, evidence-linked', text: 'Kidney decline, unsafe medicine, missing tests: every flag opens its source record.' },
-    { path: '/ask', title: 'Ask, and watch it reason', text: 'Scout decides, the agent plans, Nemotron writes, the checker verifies or sends it back.' },
+    { path: '/ask', title: 'Ask, and watch it reason', text: 'Meterless approves, Nemotron picks the scripts and decides, the fact-check verifies or sends it back.' },
     { path: '/ask', title: 'Try to break it', text: 'A prompt injection, a prescribing request, another patient: Scout stops them before the agent runs.' },
+    { path: '/audit', title: 'Every step on record', text: 'The Meterless World Model shows each request, approval, refusal and result.' },
     { path: '/evaluation', title: 'How we know', text: 'Stress tests, planted errors, held-out requests, and the blind spots we found.' },
   ];
 

@@ -1,8 +1,9 @@
 """ClinAssist backend services: everything the web app needs, built on the existing ClinAssist modules.
 
-Nothing here re-implements analysis, matching, Scout or the agent: it loads patients through Zetaris
-(or the offline CSV copy, clearly labelled), runs the same code the command-line tools run, and keeps
-small in-memory caches so the demo is responsive. Secrets come from .env and are never returned.
+Meterless supervises everything: every request opens a Meterless run (recorded in the World Model through the
+Meterless gateway), Scout decides, and every data fetch, script, Nemotron call, query or identity decision is
+approved and recorded by the supervisor before and after it runs. If the gateway is down, nothing runs.
+Secrets come from .env and are never returned.
 """
 from __future__ import annotations
 
@@ -21,13 +22,15 @@ from typing import Any
 
 import requests
 
+from clinassist import scripts as S
 from clinassist.agent import Agent, ids_in
 from clinassist.analysis import analyse, load_rules
 from clinassist.llm import LLMError, NightshiftLLM
 from clinassist.patient_record import TABLES, CsvSource, ZetarisSource, load_record
-from clinassist.scout import Scout, load_patients, load_registry, verify_contract
 from clinassist.sources import systems, zt
 from clinassist.zetaris_client import ZetarisClient, ZetarisError
+from meterless.scout import Scout, load_patients, load_registry, verify_contract
+from meterless.supervisor import ActionDenied, GatewayRecorder, MeterlessUnavailable, Supervisor, SupervisedLLM, SupervisedSource
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA = ROOT / "data" / "derived"
@@ -88,7 +91,9 @@ class Services:
         self.cache: dict[tuple[str, str], dict] = {}
         self._status_cache: tuple[float, dict] | None = None
         self._counts_cache: tuple[float, dict] | None = None
-        self.scout = Scout(self.registry, load_patients(WORLD))
+        self.scout_patients = load_patients(WORLD)
+        self.gateway = GatewayRecorder()
+        self._catalog_loaded = False
 
     # ------------------------------------------------------------------ connections
     def zetaris(self) -> ZetarisClient:
@@ -106,6 +111,42 @@ class Services:
         rec = RecordingZetaris(self.zetaris())
         return ZetarisSource(rec), rec
 
+    # ------------------------------------------------------------------ Meterless
+    def push_catalog(self) -> int:
+        """Load the single-action script catalog into Meterless H-MEM (once per gateway start)."""
+        out = self.gateway.post("/hmem/catalog", {"scripts": S.catalog()})
+        self._catalog_loaded = True
+        return out.get("loaded", 0)
+
+    def memory(self, query: str) -> dict:
+        if not self._catalog_loaded:
+            self.push_catalog()
+        out = self.gateway.post("/hmem/query", {"query": query, "topN": 40})
+        if not out.get("scripts"):  # gateway restarted since: reload the catalog once
+            self.push_catalog()
+            out = self.gateway.post("/hmem/query", {"query": query, "topN": 40})
+        return out
+
+    def supervised(self, prompt: str, mrn: str, user: dict, ai: bool = False, log=None) -> Supervisor:
+        """Open a Meterless run: the request is recorded in the World Model before anything else happens."""
+        sup = Supervisor(self.gateway, log=log)
+        sup.open(prompt, mrn, user, ai, self.mode)
+        return sup
+
+    def scope_of(self, mrn: str, include_pending: bool = False) -> set[str]:
+        ident = self.identity_of(mrn)
+        ids = {mrn} | {r["record_id"] for r in ident["linked_records"]}
+        if include_pending:
+            ids |= {r["record_id"] for r in ident["pending_review"]}
+        return ids
+
+    def meterless_runs(self) -> dict:
+        return self.gateway.get("/world/runs")
+
+    def meterless_run(self, run_id: str) -> dict:
+        _safe(run_id)
+        return self.gateway.get(f"/world/runs/{run_id}")
+
     def set_mode(self, mode: str) -> dict:
         if mode not in ("zetaris", "csv"):
             raise ValueError("mode must be zetaris or csv")
@@ -115,18 +156,28 @@ class Services:
 
     # ------------------------------------------------------------------ status
     def status(self, fresh: bool = False) -> dict:
-        if self._status_cache and not fresh and time.time() - self._status_cache[0] < 20:
+        if self._status_cache and not fresh and time.time() - self._status_cache[0] < 120:
             return self._status_cache[1]
         out: dict[str, Any] = {"checked_at": now_iso(), "mode": self.mode, "as_of": self.as_of.isoformat(),
                                "years": self.years, "rules_version": self.rules["version"]}
         # Zetaris: one federated query that touches all three engines
         t0 = time.time()
         try:
+            out["meterless"] = {"ok": True, **self.gateway.get("/health"), "seconds": round(time.time() - t0, 2)}
+        except Exception as e:  # noqa: BLE001
+            out["meterless"] = {"ok": False, "error": _clean(str(e))}
+        t0 = time.time()
+        try:
+            if not out["meterless"]["ok"]:
+                raise MeterlessUnavailable("not checked: the Meterless gateway must be running before any data is read")
             z = self.zetaris()
             sql = (f"SELECT 'hospital_ehr' AS s, COUNT(*) AS n FROM {zt('hospital_ehr.patients')} "
                    f"UNION ALL SELECT 'lab_lis', COUNT(*) FROM {zt('lab_lis.lab_patients')} "
                    f"UNION ALL SELECT 'pharmacy_rx', COUNT(*) FROM {zt('pharmacy_rx.pharmacy_patients')}")
-            rows = z.rows(sql, ["s", "n"])
+            sup = self.supervised("Health check: count patients in the three systems", "-", {"id": "clinassist", "role": "admin"})
+            rows = sup.act("admin.query", "zetaris:patients x3", {"tables": 3}, lambda: z.rows(sql, ["s", "n"]),
+                           actor="health-check", executor="zetaris", summarize=lambda r: f"{len(r)} rows")
+            sup.close("ok")
             out["zetaris"] = {"ok": True, "seconds": round(time.time() - t0, 2),
                               "patients": {r["s"]: int(float(r["n"])) for r in rows}}
         except Exception as e:  # noqa: BLE001 - shown to the user as a status, never raised
@@ -177,7 +228,12 @@ class Services:
             z = self.zetaris()
             parts = [f"SELECT '{s}.{t}' AS t, COUNT(*) AS n FROM {zt(s + '.' + t)}" for s, ts in SYSTEM_TABLES.items() for t in ts]
             t0 = time.time()
-            rows = {r["t"]: int(float(r["n"])) for r in z.rows(" UNION ALL ".join(parts), ["t", "n"])}
+            sup = self.supervised("Count the rows of every source table (audit)", "-", {"id": "ui", "role": "admin"})
+            raw = sup.act("admin.query", "zetaris:12 tables", {"tables": len(parts)}, lambda: z.rows(" UNION ALL ".join(parts), ["t", "n"]),
+                          actor="ui", executor="zetaris", summarize=lambda r: f"{len(r)} rows")
+            sup.close("ok")
+            out["meterless_run"] = sup.run_id
+            rows = {r["t"]: int(float(r["n"])) for r in raw}
             out["zetaris_ok"], out["seconds"] = True, round(time.time() - t0, 2)
             out["sql"] = " UNION ALL ".join(parts[:3]) + " UNION ALL ..."
         except Exception as e:  # noqa: BLE001
@@ -199,8 +255,12 @@ class Services:
         cols = _select_aliases(sql)
         z = self.zetaris()
         t0 = time.time()
-        r = requests.post(z.url, timeout=z.timeout, json={"queryId": str(uuid.uuid4()), "sql": sql, "source": "SqlEditor", "limit": 200},
-                          headers={"Authorization": "Bearer " + z._key, "X-Org-ID": z.org_id, "X-Request-ID": str(uuid.uuid4())})
+        sup = self.supervised("Federated SQL console query", "-", {"id": "ui", "role": "admin"})
+        r = sup.act("admin.query", "zetaris:console", {"sql": sql[:500]},
+                    lambda: requests.post(z.url, timeout=z.timeout, json={"queryId": str(uuid.uuid4()), "sql": sql, "source": "SqlEditor", "limit": 200},
+                                          headers={"Authorization": "Bearer " + z._key, "X-Org-ID": z.org_id, "X-Request-ID": str(uuid.uuid4())}),
+                    actor="ui", executor="zetaris", summarize=lambda resp: f"HTTP {resp.status_code}")
+        sup.close("ok" if r.status_code < 400 else "error")
         if r.status_code >= 400:
             raise ZetarisError(f"Zetaris HTTP {r.status_code}: {_clean(r.text[:300])}")
         body = r.json()
@@ -211,7 +271,7 @@ class Services:
         width = max((len(x) for x in data), default=len(cols))
         if len(cols) != width:
             cols = [f"col{i + 1}" for i in range(width)]
-        return {"columns": cols, "rows": data[:200], "row_count": len(data), "seconds": round(time.time() - t0, 2)}
+        return {"columns": cols, "rows": data[:200], "row_count": len(data), "seconds": round(time.time() - t0, 2), "meterless_run": sup.run_id}
 
     def patient_in_systems(self, mrn: str) -> dict:
         """The same person as each system stores them: shows why matching is needed."""
@@ -224,23 +284,30 @@ class Services:
         status_of = {r["record_id"]: r.get("status", "") for r in ident["linked_records"] + ident["pending_review"]}
         out, queries = [], []
         rz = RecordingZetaris(self.zetaris()) if self.mode == "zetaris" else None
+        user = {"id": "ui", "role": "clinician"}
+        sup = self.supervised("Show how each system stores this patient", mrn, user)
+        decision = Scout(self.registry, self.scout_patients).decide("Which records are linked to him?", mrn, user).to_dict()
+        sup.decided(decision, self.scope_of(mrn, include_pending=True))
         for s, ids in wanted.items():
             table, key, cols = PATIENT_COLS[s]
             for i in ids:
                 _safe(i)
-            if rz:
-                sel = ", ".join(f"date_format({c}, 'yyyy-MM-dd') AS {c}" if (s == "hospital_ehr" and c == "birth_date") else c for c in cols)
-                rows = rz.rows(f"SELECT {sel} FROM {zt(table)} WHERE {key} IN ({', '.join(repr(i) for i in ids)})", cols)
-            else:
+            def fetch(s=s, ids=ids, table=table, key=key, cols=cols):
+                if rz:
+                    sel = ", ".join(f"date_format({c}, 'yyyy-MM-dd') AS {c}" if (s == "hospital_ehr" and c == "birth_date") else c for c in cols)
+                    return rz.rows(f"SELECT {sel} FROM {zt(table)} WHERE {key} IN ({', '.join(repr(i) for i in ids)})", cols)
                 rel = {"hospital_ehr": "hospital/patients.csv", "lab_lis": "laboratory/lab_patients.csv",
                        "pharmacy_rx": "pharmacy/pharmacy_patients.csv"}[s]
-                rows = [{c: r.get(c, "") for c in cols} for r in csv.DictReader(open(DATA / rel, encoding="utf-8")) if r[key] in ids]
+                return [{c: r.get(c, "") for c in cols} for r in csv.DictReader(open(DATA / rel, encoding="utf-8")) if r[key] in ids]
+            rows = sup.act("data.fetch", f"{self.mode}:{table}", {"keys": ids}, fetch, actor="ui", executor=self.mode,
+                           summarize=lambda r: f"{len(r)} row(s)")
             for row in rows:
                 out.append({"system": s, "engine": systems()[s]["engine"], "record_id": row[key],
                             "status": "master" if s == "hospital_ehr" else status_of.get(row[key], ""), "row": row})
         if rz:
             queries = rz.log
-        return {"mrn": mrn, "label": ident["label"], "records": out, "queries": queries, "mode": self.mode}
+        sup.close("ok")
+        return {"mrn": mrn, "label": ident["label"], "records": out, "queries": queries, "mode": self.mode, "meterless_run": sup.run_id}
 
     # ------------------------------------------------------------------ identity / World Model
     def identity_view(self) -> dict:
@@ -280,7 +347,7 @@ class Services:
                 "total_records": len(links)}
 
     def review(self, system: str, record_id: str, action: str, by: str, note: str = "") -> dict:
-        """Record a reviewer's decision in the World Model (wm/review.ts), then rebuild the identity view."""
+        """Record a reviewer's decision in the World Model (meterless/world/review.ts), then rebuild the identity view."""
         if action not in ("approve", "reject"):
             raise ValueError("action must be approve or reject")
         if system not in ("laboratory", "pharmacy"):
@@ -293,18 +360,56 @@ class Services:
         npx = shutil.which("npx.cmd") or shutil.which("npx")
         if not npx:
             raise RuntimeError("Node (npx) was not found on this computer")
-        cmd = [npx, "tsx", "wm/review.ts", action, system, record_id, "--by", by] + (["--note", note] if note else [])
-        r1 = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=120)
-        if r1.returncode != 0:
-            raise RuntimeError((r1.stderr or r1.stdout).strip()[:400])
-        r2 = subprocess.run([npx, "tsx", "wm/build_world.ts"], cwd=ROOT, capture_output=True, text=True, timeout=300)
-        if r2.returncode != 0:
-            raise RuntimeError((r2.stderr or r2.stdout).strip()[:400])
+        link = next((l for l in (_json(IDENTITY / "identity_links.json") or {}).get("links", [])
+                     if l["system"] == system and l["record_id"] == record_id), None)
+        if not link or not link.get("mrn"):
+            raise KeyError(f"{system} {record_id} is not a pending match")
+        sup = self.supervised(f"Identity decision: {action} {system} {record_id} -> {link['mrn']}", link["mrn"],
+                              {"id": by, "role": "records_staff"})
+
+        def node(cmd):
+            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=300)
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or r.stdout).strip()[:400])
+            return r
+
+        cmd = [npx, "tsx", "meterless/world/review.ts", action, system, record_id, "--by", by] + (["--note", note] if note else [])
+        r1 = sup.act("identity.decision", f"{system}:{record_id}", {"action": action, "mrn": link["mrn"], "by": by}, lambda: node(cmd),
+                     actor=by, executor="meterless-world-model", summarize=lambda r: r.stdout.strip()[:200])
+        r2 = sup.act("identity.decision", "rebuild identity view", {}, lambda: node([npx, "tsx", "meterless/world/build_world.ts"]),
+                     actor=by, executor="meterless-world-model", summarize=lambda r: r.stdout.strip().splitlines()[0][:200])
+        sup.close("ok")
         with self.lock:
             self.cache.clear()
-            self.scout = Scout(self.registry, load_patients(WORLD))
+            self.scout_patients = load_patients(WORLD)
             self._status_cache = None
-        return {"recorded": r1.stdout.strip(), "world": r2.stdout.strip(), "summary": self.world_summary()}
+        return {"recorded": r1.stdout.strip(), "world": r2.stdout.strip(), "summary": self.world_summary(), "meterless_run": sup.run_id}
+
+    def rematch(self, by: str) -> dict:
+        """Supervised batch job: re-run the matcher over all patients through Zetaris, then rebuild the World Model view."""
+        by = re.sub(r"[^A-Za-z0-9 .,'-]", "", by or "").strip()[:60]
+        if not by:
+            raise ValueError("a named person must start the matching job")
+        npx = shutil.which("npx.cmd") or shutil.which("npx")
+        sup = self.supervised("Batch job: match lab and pharmacy patients to hospital patients", "-", {"id": by, "role": "records_staff"})
+
+        def proc(cmd):
+            r = subprocess.run(cmd, cwd=ROOT, capture_output=True, text=True, timeout=600)
+            if r.returncode != 0:
+                raise RuntimeError((r.stderr or r.stdout).strip()[-400:])
+            return r
+
+        import sys as _sys
+        m = sup.act("batch.matching", "run_matching.py", {"source": self.mode},
+                    lambda: proc([_sys.executable, "run_matching.py", "--source", self.mode]), actor=by, executor="python",
+                    summarize=lambda r: r.stdout.strip().splitlines()[-1][:200] if r.stdout.strip() else "done")
+        w = sup.act("batch.matching", "rebuild identity view", {}, lambda: proc([npx, "tsx", "meterless/world/build_world.ts"]),
+                    actor=by, executor="meterless-world-model", summarize=lambda r: r.stdout.strip().splitlines()[0][:200])
+        sup.close("ok")
+        with self.lock:
+            self.cache.clear()
+            self.scout_patients = load_patients(WORLD)
+        return {"matching": m.stdout.strip()[-1500:], "world": w.stdout.strip(), "summary": self.world_summary(), "meterless_run": sup.run_id}
 
     def provenance(self, mrn: str) -> dict:
         """Every World Model event about this patient and the records linked (or proposed) to them."""
@@ -343,13 +448,21 @@ class Services:
         if not fresh and key in self.cache:
             return self.cache[key]
         src, rz = self.source()
+        user = {"id": "ui", "role": "clinician"}
+        sup = self.supervised("Open the patient review", mrn, user)
+        decision = Scout(self.registry, self.scout_patients).decide("Prepare a pre-visit summary", mrn, user).to_dict()
+        sup.decided(decision, self.scope_of(mrn))
+        source = SupervisedSource(src, sup, self.mode)
         t0 = time.time()
-        rec = load_record(src, WORLD, mrn, self.as_of, self.years)
+        rec = sup.act("view", "load patient record", {"mrn": mrn}, lambda: load_record(source, WORLD, mrn, self.as_of, self.years),
+                      actor="ui", executor="python", summarize=lambda r: f"{len(r.items)} items")
         t1 = time.time()
-        result = analyse(rec, self.rules)
+        result = sup.act("view", "patient review analysis", {"checks": "all"}, lambda: analyse(rec, self.rules), actor="ui",
+                         executor="python", summarize=lambda r: f"{len(r['findings'])} findings")
+        sup.close("ok")
         entry = {"rec": rec, "result": result, "loaded_at": now_iso(), "mode": self.mode,
                  "load_seconds": round(t1 - t0, 2), "analysis_seconds": round(time.time() - t1, 3),
-                 "queries": rz.log if rz else []}
+                 "queries": rz.log if rz else [], "meterless_run": sup.run_id}
         with self.lock:
             self.cache[key] = entry
         return entry
@@ -364,7 +477,7 @@ class Services:
         return {**r, "evidence": evidence,
                 "load": {"mode": e["mode"], "loaded_at": e["loaded_at"], "seconds": e["load_seconds"],
                          "analysis_seconds": e["analysis_seconds"], "queries": e["queries"],
-                         "items": len(e["rec"].items)}}
+                         "items": len(e["rec"].items), "meterless_run": e.get("meterless_run")}}
 
     def evidence(self, mrn: str, eid: str) -> dict:
         e = self.load(mrn)
@@ -376,18 +489,29 @@ class Services:
         raise KeyError(f"{eid} is not in this patient's record")
 
     # ------------------------------------------------------------------ Scout + agent
-    def scout_decide(self, prompt: str, mrn: str, user: dict) -> dict:
+    def scout_decide(self, prompt: str, mrn: str, user: dict, use_ai: bool = True, sup: Supervisor | None = None) -> dict:
+        """Scout's decision. With AI on, Nemotron interprets only the safe requests the rules could not place
+        (through the supervisor, so that call is recorded too)."""
         _safe(mrn)
-        d = self.scout.decide(prompt, mrn, user)
+        own = sup is None
+        if own:
+            sup = self.supervised(prompt, mrn, user, use_ai)
+        llm = self.llm() if use_ai else None
+        scout = Scout(self.registry, self.scout_patients, llm=SupervisedLLM(llm, sup, "interpreter") if llm else None)
+        d = scout.decide(prompt, mrn, user)
         out = d.to_dict()
         if d.contract:
             ok, why = verify_contract(d.contract, mrn)
             out["contract_check"] = {"ok": ok, "reason": why}
+        if own:
+            sup.decided(out, self.scope_of(mrn))
+            sup.close("decision-only")
+        out["meterless_run"] = sup.run_id
         return out
 
     def run_agent(self, prompt: str, mrn: str, user: dict, use_ai: bool, emit) -> dict:
-        """Scout -> load record -> agent loop; every step is sent to `emit` as it happens and saved to data/derived/runs."""
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + uuid.uuid4().hex[:6]
+        """One request, fully supervised by Meterless: record -> Scout -> Nemotron as the boss -> enforced checks.
+        Every step is sent to `emit` as it happens; the run is recorded in the World Model and saved to data/derived/runs."""
         events: list[dict] = []
         t_start = time.time()
 
@@ -396,33 +520,48 @@ class Services:
             events.append(ev)
             emit(ev)
 
+        log = lambda entry: send("trace", entry=_jsonable(entry))  # noqa: E731
+        try:
+            sup = self.supervised(prompt, mrn, user, use_ai, log=log)
+        except MeterlessUnavailable as e:
+            res = {"status": "error", "summary": f"Not run: {e}. Nothing runs without Meterless supervising it.",
+                   "verdict": {}, "plan": [], "rounds": 0}
+            send("result", result=res)
+            return res
+        run_id = sup.run_id
         send("start", run_id=run_id, prompt=prompt, mrn=mrn, user=user, ai=use_ai, mode=self.mode)
-        decision = self.scout_decide(prompt, mrn, user)
+        decision = self.scout_decide(prompt, mrn, user, use_ai, sup=sup)
+        sup.decided(decision, self.scope_of(mrn))
         send("scout", decision=decision)
         if decision["status"] != "approved":
             res = {"status": decision["status"], "summary": decision["message"], "verdict": {}, "plan": [], "rounds": 0}
+            sup.close(res["status"])
             send("result", result=res)
             self._save_run(run_id, prompt, mrn, user, use_ai, events, res)
             return res
-        send("stage", stage="loading", message=f"Loading the patient's 3-year record through "
-                                                  f"{'Zetaris (live)' if self.mode == 'zetaris' else 'the offline CSV copy'}")
-        hit = (self.mode, mrn) in self.cache
-        try:
-            e = self.load(mrn)
-        except Exception as ex:  # noqa: BLE001
-            res = {"status": "error", "summary": f"Could not load the record: {_clean(str(ex))}", "verdict": {}, "plan": [], "rounds": 0}
-            send("result", result=res)
-            self._save_run(run_id, prompt, mrn, user, use_ai, events, res)
-            return res
-        send("stage", stage="loaded", items=len(e["rec"].items), seconds=e["load_seconds"], queries=e["queries"],
-             cached=hit, mode=e["mode"])
+        src, rz = self.source()
+        ctx = S.Ctx(mrn, self.as_of, self.years, SupervisedSource(src, sup, self.mode), WORLD, self.rules)
         llm = self.llm() if use_ai else None
         if use_ai and not llm:
-            send("stage", stage="ai-missing", message="Nightshift is not configured in .env: using the verified rule-based writer")
-        agent = Agent(llm, log=lambda entry: send("trace", entry=_jsonable(entry)))
-        r = agent.run(prompt, e["rec"], e["result"], self.rules, contract=decision["contract"], require_contract=True)
-        res = {"status": r.status, "summary": r.summary, "verdict": _jsonable(r.verdict), "plan": r.plan, "rounds": r.rounds,
-               "retrieved": len(ids_in(e["result"]))}
+            send("stage", stage="ai-missing", message="Nightshift is not configured in .env: the contract's default plan and the verified rule-based writer are used")
+        agent = Agent(llm, supervisor=sup, log=log, memory=self.memory if llm else None)
+        try:
+            r = agent.run(prompt, ctx, contract=decision["contract"], require_contract=True)
+            res = {"status": r.status, "summary": r.summary, "verdict": _jsonable(r.verdict), "plan": r.plan, "rounds": r.rounds,
+                   "scripts": len(r.plan), "meterless_actions": len(sup.actions), "queries": rz.log if rz else []}
+        except MeterlessUnavailable as e:
+            res = {"status": "error", "summary": f"Stopped: {e}", "verdict": {}, "plan": [], "rounds": 0}
+        try:
+            sup.close(res["status"], res.get("rounds", 0))
+            if llm and res["status"] in ("verified-ai", "escalated"):
+                self.gateway.post("/hmem/lessons", {
+                    "run_id": run_id, "confidence": 0.7 if res["status"] == "verified-ai" else 0.5,
+                    "tags": [str((decision.get("intent") or {}).get("primary")), res["status"]],
+                    "content": f"For a '{(decision.get('intent') or {}).get('primary')}' request the boss ran "
+                               f"{', '.join(dict.fromkeys(c['tool'] for c in res['plan']))}; result {res['status']} after "
+                               f"{res['rounds']} round(s)."})
+        except MeterlessUnavailable:
+            pass
         send("result", result=res)
         self._save_run(run_id, prompt, mrn, user, use_ai, events, res)
         return res

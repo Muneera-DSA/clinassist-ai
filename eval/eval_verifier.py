@@ -25,7 +25,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from clinassist.agent import CITE, DATE, NUM, evaluate, ids_in, sentences, template_summary  # noqa: E402
+from clinassist.verifier import CITE, DATE, NUM, evaluate, ids_in, sentences, template_summary  # noqa: E402
 from clinassist.analysis import analyse, load_rules  # noqa: E402
 from clinassist.patient_record import TABLES, load_record  # noqa: E402
 

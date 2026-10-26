@@ -1,0 +1,607 @@
+{
+  "_note": "ClinAssist implementation of the Meterless Scout Intent spec (sense, interpret, guard, route, recommend). Patterns are case-insensitive regular expressions with weights. Synthetic-data demonstration; every approved request still ends with a clinician's review.",
+  "version": "2026-10-26.3",
+  "lanes": {
+    "planner": "meterless/fast",
+    "writer": "meterless/deep",
+    "judge": "meterless/judge",
+    "interpreter": "meterless/fast"
+  },
+  "scoring": {
+    "min_score": 2.0,
+    "secondary_ratio": 0.6,
+    "contract_ttl_minutes": 15
+  },
+  "intents": {
+    "summary.previsit": {
+      "description": "Evidence-linked pre-visit summary of the patient's history",
+      "patterns": [
+        [
+          "\\bsumm?ar(y|ies|i[sz]e|i[sz]ing)\\b",
+          3
+        ],
+        [
+          "\\bpre-?visit\\b",
+          3
+        ],
+        [
+          "\\boverview\\b",
+          3
+        ],
+        [
+          "\\bbrief(ing)?\\b",
+          2
+        ],
+        [
+          "\\bwrite[- ]?up\\b",
+          2
+        ],
+        [
+          "\\bhistory\\b",
+          1
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "check_egfr_decline",
+          "args": {}
+        },
+        {
+          "tool": "check_kidney_stage",
+          "args": {}
+        },
+        {
+          "tool": "check_renal_dosing",
+          "args": {}
+        },
+        {
+          "tool": "check_potassium_on_acei",
+          "args": {}
+        },
+        {
+          "tool": "check_diabetes_control",
+          "args": {}
+        },
+        {
+          "tool": "find_stale_medications",
+          "args": {}
+        },
+        {
+          "tool": "find_duplicate_ingredients",
+          "args": {}
+        },
+        {
+          "tool": "check_allergy_conflicts",
+          "args": {}
+        },
+        {
+          "tool": "check_low_bp_on_treatment",
+          "args": {}
+        },
+        {
+          "tool": "find_range_crossings",
+          "args": {}
+        },
+        {
+          "tool": "find_monitoring_gaps",
+          "args": {}
+        },
+        {
+          "tool": "find_lab_conflicts",
+          "args": {}
+        },
+        {
+          "tool": "check_problem_list",
+          "args": {}
+        },
+        {
+          "tool": "check_identity_pending",
+          "args": {}
+        },
+        {
+          "tool": "compute_trend",
+          "args": {
+            "analyte": "egfr"
+          }
+        },
+        {
+          "tool": "compute_trend",
+          "args": {
+            "analyte": "hba1c"
+          }
+        },
+        {
+          "tool": "build_timeline",
+          "args": {}
+        },
+        {
+          "tool": "rank_findings",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator"
+      ],
+      "allowed": [
+        "fetch_record",
+        "check_egfr_decline",
+        "check_kidney_stage",
+        "check_renal_dosing",
+        "check_potassium_on_acei",
+        "check_diabetes_control",
+        "find_stale_medications",
+        "find_duplicate_ingredients",
+        "check_allergy_conflicts",
+        "check_low_bp_on_treatment",
+        "find_range_crossings",
+        "find_monitoring_gaps",
+        "find_lab_conflicts",
+        "check_problem_list",
+        "check_identity_pending",
+        "list_lab_results",
+        "compute_trend",
+        "kidney_stage_history",
+        "list_medications",
+        "list_problems",
+        "build_timeline",
+        "list_emergency_visits",
+        "get_identity_links",
+        "rank_findings"
+      ]
+    },
+    "finding.explain": {
+      "description": "Explain why a finding or alert was raised, with its evidence",
+      "patterns": [
+        [
+          "\\bexplain\\w*\\b",
+          3
+        ],
+        [
+          "\\bwhy\\b",
+          2
+        ],
+        [
+          "\\b(alert|flag|finding|warning)s?\\b",
+          2
+        ],
+        [
+          "\\bwhat does .{0,40}\\bmean\\b",
+          2
+        ],
+        [
+          "\\bunderstand\\b",
+          2
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "check_egfr_decline",
+          "args": {}
+        },
+        {
+          "tool": "check_renal_dosing",
+          "args": {}
+        },
+        {
+          "tool": "check_low_bp_on_treatment",
+          "args": {}
+        },
+        {
+          "tool": "check_allergy_conflicts",
+          "args": {}
+        },
+        {
+          "tool": "find_monitoring_gaps",
+          "args": {}
+        },
+        {
+          "tool": "compute_trend",
+          "args": {
+            "analyte": "egfr"
+          }
+        },
+        {
+          "tool": "build_timeline",
+          "args": {}
+        },
+        {
+          "tool": "rank_findings",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator"
+      ],
+      "allowed": [
+        "fetch_record",
+        "check_egfr_decline",
+        "check_kidney_stage",
+        "check_renal_dosing",
+        "check_potassium_on_acei",
+        "check_diabetes_control",
+        "find_stale_medications",
+        "find_duplicate_ingredients",
+        "check_allergy_conflicts",
+        "check_low_bp_on_treatment",
+        "find_range_crossings",
+        "find_monitoring_gaps",
+        "find_lab_conflicts",
+        "check_problem_list",
+        "check_identity_pending",
+        "list_lab_results",
+        "compute_trend",
+        "kidney_stage_history",
+        "list_medications",
+        "list_problems",
+        "build_timeline",
+        "list_emergency_visits",
+        "get_identity_links",
+        "rank_findings"
+      ]
+    },
+    "medication.review": {
+      "description": "Review the medicine list: stale, duplicate, kidney-unsafe, allergy clashes",
+      "patterns": [
+        [
+          "\\bmedic(ation|ine)s?\\b",
+          3
+        ],
+        [
+          "\\bdrugs?\\b",
+          2
+        ],
+        [
+          "\\bprescriptions?\\b",
+          2
+        ],
+        [
+          "\\bduplicat\\w*\\b",
+          1.5
+        ],
+        [
+          "\\ballerg(y|ies|ic)\\b",
+          2
+        ],
+        [
+          "\\b(statins?|metformin|lisinopril|alendron\\w*|insulin|amlodipine)\\b",
+          1
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "list_medications",
+          "args": {
+            "active_only": false
+          }
+        },
+        {
+          "tool": "find_stale_medications",
+          "args": {}
+        },
+        {
+          "tool": "find_duplicate_ingredients",
+          "args": {}
+        },
+        {
+          "tool": "check_renal_dosing",
+          "args": {}
+        },
+        {
+          "tool": "check_allergy_conflicts",
+          "args": {}
+        },
+        {
+          "tool": "check_low_bp_on_treatment",
+          "args": {}
+        },
+        {
+          "tool": "check_potassium_on_acei",
+          "args": {}
+        },
+        {
+          "tool": "compute_trend",
+          "args": {
+            "analyte": "egfr"
+          }
+        },
+        {
+          "tool": "rank_findings",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician"
+      ],
+      "allowed": [
+        "fetch_record",
+        "list_medications",
+        "find_stale_medications",
+        "find_duplicate_ingredients",
+        "check_renal_dosing",
+        "check_allergy_conflicts",
+        "check_low_bp_on_treatment",
+        "check_potassium_on_acei",
+        "check_egfr_decline",
+        "check_kidney_stage",
+        "compute_trend",
+        "list_lab_results",
+        "kidney_stage_history",
+        "list_problems",
+        "rank_findings"
+      ]
+    },
+    "trend.review": {
+      "description": "How one or more lab values or vital signs changed over time",
+      "patterns": [
+        [
+          "\\btrends?\\b",
+          3
+        ],
+        [
+          "\\bover (time|the (last|past))\\b",
+          2
+        ],
+        [
+          "\\bchang(e|ed|es|ing)\\b",
+          1.5
+        ],
+        [
+          "\\bkidney function\\b",
+          1.5
+        ],
+        [
+          "\\b(egfr|hba1c|a1c|potassium|creatinine|glucose|sodium|ldl|cholesterol|ha?emoglobin|blood pressure)\\b",
+          1
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "compute_trend",
+          "args": {
+            "analyte": "egfr"
+          }
+        },
+        {
+          "tool": "find_range_crossings",
+          "args": {}
+        },
+        {
+          "tool": "find_lab_conflicts",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator"
+      ],
+      "allowed": [
+        "fetch_record",
+        "compute_trend",
+        "list_lab_results",
+        "kidney_stage_history",
+        "find_range_crossings",
+        "find_lab_conflicts",
+        "check_egfr_decline",
+        "check_kidney_stage",
+        "rank_findings"
+      ]
+    },
+    "gaps.review": {
+      "description": "Monitoring tests that are missing or overdue",
+      "patterns": [
+        [
+          "\\bmissing\\b",
+          3
+        ],
+        [
+          "\\boverdue\\b",
+          3
+        ],
+        [
+          "\\bmonitoring\\b",
+          2
+        ],
+        [
+          "\\bnot been (done|checked|tested)\\b",
+          2
+        ],
+        [
+          "\\bdue\\b",
+          1
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "find_monitoring_gaps",
+          "args": {}
+        },
+        {
+          "tool": "check_diabetes_control",
+          "args": {}
+        },
+        {
+          "tool": "list_problems",
+          "args": {}
+        },
+        {
+          "tool": "rank_findings",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator"
+      ],
+      "allowed": [
+        "fetch_record",
+        "find_monitoring_gaps",
+        "check_diabetes_control",
+        "list_problems",
+        "list_lab_results",
+        "compute_trend",
+        "check_kidney_stage",
+        "rank_findings"
+      ]
+    },
+    "identity.review": {
+      "description": "Which source records are linked to the patient and which matches await a person",
+      "patterns": [
+        [
+          "\\bidentit(y|ies)\\b",
+          3
+        ],
+        [
+          "\\b(linked|source) records?\\b",
+          3
+        ],
+        [
+          "\\bpending\\b",
+          1.5
+        ],
+        [
+          "\\bmatch(es|ing)?\\b",
+          1.5
+        ],
+        [
+          "\\bmerge[ds]?\\b",
+          1
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "get_identity_links",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator",
+        "records_staff"
+      ],
+      "allowed": [
+        "get_identity_links"
+      ]
+    }
+  },
+  "analyte_words": {
+    "egfr": [
+      "egfr",
+      "kidney function",
+      "renal function"
+    ],
+    "creatinine": [
+      "creatinine",
+      "kidney function",
+      "renal function"
+    ],
+    "hba1c": [
+      "hba1c",
+      "a1c",
+      "sugar control",
+      "diabetes control"
+    ],
+    "glucose": [
+      "glucose",
+      "blood sugar"
+    ],
+    "potassium": [
+      "potassium"
+    ],
+    "sodium": [
+      "sodium"
+    ],
+    "ldl": [
+      "ldl",
+      "cholesterol"
+    ],
+    "hemoglobin": [
+      "haemoglobin",
+      "hemoglobin",
+      "anaemia",
+      "anemia"
+    ],
+    "acr": [
+      "albumin",
+      "acr"
+    ],
+    "sbp": [
+      "blood pressure",
+      "bp",
+      "systolic"
+    ],
+    "dbp": [
+      "blood pressure",
+      "bp",
+      "diastolic"
+    ]
+  },
+  "guards": {
+    "injection": [
+      "\\bignore\\b.{0,30}\\b(instructions?|rules?|prompt|guidelines?|polic(y|ies))\\b",
+      "\\bdisregard\\b.{0,30}\\b(instructions?|rules?|prompt|guidelines?|checks?)\\b",
+      "\\b(system|hidden|initial|original) (prompt|instructions?)\\b",
+      "\\byou are now\\b",
+      "\\bact as\\b",
+      "\\bpretend\\b",
+      "\\b(turn off|disable|bypass|skip|switch off)\\b.{0,20}\\b(verif\\w*|fact[- ]?check\\w*|checks?|checker|safety|guard\\w*|citations?|scout)\\b",
+      "\\bwithout (any )?(citations?|checks?|verification)\\b",
+      "\\braw (ai|model|llm) (text|output|answer)\\b",
+      "\\b(api[ _-]?keys?|passwords?|tokens?|secrets?|credentials?)\\b",
+      "\\.env\\b"
+    ],
+    "clinical_decision": [
+      "\\bdiagnos(e|ing)\\b",
+      "\\b(his|her|their|the|a) diagnosis\\b",
+      "\\bwhat is wrong with\\b",
+      "\\bprescrib(e|ing)\\b",
+      "\\b(dose|dosage|dosing)\\b",
+      "\\bshould (i|we|he|she|they)\\b.{0,25}\\b(start|stop|increase|decrease|reduce|switch|change|give|continue|discontinue|add|use)\\b",
+      "\\brecommend\\w*\\b.{0,20}\\b(treatment|therapy|medication|medicine|drug|plan)\\b",
+      "\\btreatment plan\\b",
+      "\\bwhat (treatment|medication|medicine|drug|therapy)\\b.{0,20}\\b(should|to)\\b"
+    ],
+    "bulk_data": [
+      "\\b(all|every|each)( of the)? patients?\\b",
+      "\\bexport\\b",
+      "\\b(download|dump)\\b",
+      "\\bwhich patients\\b",
+      "\\bpatients (with|who|that)\\b",
+      "\\bdatabase\\b",
+      "\\blist (of )?(all )?patients\\b"
+    ],
+    "other_patient_words": [
+      "\\b(another|other|different) patients?\\b"
+    ]
+  },
+  "messages": {
+    "clinical-decision": "ClinAssist supports a clinician's review; it does not diagnose, prescribe or recommend treatment. I can summarise the evidence or explain a finding instead.",
+    "injection": "This request tries to change ClinAssist's safety rules or reveal protected information, so it was not run.",
+    "wrong-patient": "This session is limited to the selected patient. Open the other patient's record to ask about them.",
+    "bulk-data": "ClinAssist works on one selected patient at a time; population-wide lists and exports are outside its scope.",
+    "role-not-permitted": "Your role is not permitted to run this kind of request.",
+    "clarify": "I'm not sure what you need. Choose one: a pre-visit summary, an explanation of a finding, a medicine review, a trend, missing tests, or the linked records.",
+    "ai-flagged-unsafe": "Nemotron judged this request unsafe or out of scope for ClinAssist, so it was not run."
+  }
+}

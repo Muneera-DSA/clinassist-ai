@@ -1,6 +1,7 @@
 r"""ClinAssist AI backend: a small JSON API over the ClinAssist modules, plus the built Angular app.
 
 Standard library only (no web framework to install). Listens on 127.0.0.1 only.
+Needs the Meterless gateway running (npx.cmd tsx meterless/gateway/server.ts): every request is supervised by it.
 
     .\.venv\Scripts\python.exe -m server              # http://127.0.0.1:8000
     .\.venv\Scripts\python.exe -m server --port 8001
@@ -20,6 +21,8 @@ API (all JSON; POST bodies are JSON):
     GET  /api/patients/<mrn>/provenance   World Model events about this patient
     GET  /api/identity                    matching report, review queue, decisions
     POST /api/identity/review             {"system","record_id","action":"approve|reject","by","note"}
+    POST /api/identity/rematch            {"by"}  supervised batch job: re-run matching, rebuild the World Model view
+    GET  /api/meterless/runs[/<id>]       World Model record of every supervised run (request, decision, actions)
     POST /api/scout                       {"prompt","mrn","role","user"}
     POST /api/agent/run                   {"prompt","mrn","role","user","ai"}  -> Server-Sent Events, step by step
     GET  /api/runs  /api/runs/<id>        saved agent runs (audit trail)
@@ -43,6 +46,7 @@ from urllib.parse import parse_qs, urlparse
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from meterless.supervisor import ActionDenied, MeterlessUnavailable  # noqa: E402
 from server.services import Services, _clean  # noqa: E402
 
 WEB_DIST = ROOT / "web" / "dist" / "clinassist-web" / "browser"
@@ -97,6 +101,10 @@ class Handler(BaseHTTPRequestHandler):
             return self.error(405, "method not allowed")
         except (ValueError, KeyError) as e:
             return self.error(400 if isinstance(e, ValueError) else 404, _clean(str(e).strip("'\"")))
+        except MeterlessUnavailable as e:
+            return self.error(503, _clean(f"{e}. Nothing runs without Meterless supervising it."))
+        except ActionDenied as e:
+            return self.error(403, _clean(f"Meterless refused this action: {e}"))
         except Exception as e:  # noqa: BLE001
             traceback.print_exc()
             return self.error(502, _clean(f"{type(e).__name__}: {e}"))
@@ -138,6 +146,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.json(s.run(m.group(1)))
             if path == "/api/evaluation":
                 return self.json(s.evaluation())
+            if path == "/api/meterless/runs":
+                return self.json(s.meterless_runs())
+            m = re.fullmatch(r"/api/meterless/runs/([A-Za-z0-9_.-]+)", path)
+            if m:
+                return self.json(s.meterless_run(m.group(1)))
             return self.error(404, "unknown endpoint")
         b = self.body()
         if path == "/api/settings":
@@ -147,9 +160,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/identity/review":
             return self.json(s.review(str(b.get("system", "")), str(b.get("record_id", "")), str(b.get("action", "")),
                                       str(b.get("by", "")), str(b.get("note", ""))))
+        if path == "/api/identity/rematch":
+            return self.json(s.rematch(str(b.get("by", ""))))
         if path == "/api/scout":
             prompt, mrn, user = self._ask(b)
-            return self.json(s.scout_decide(prompt, mrn, user))
+            return self.json(s.scout_decide(prompt, mrn, user, bool(b.get("ai", True))))
         if path == "/api/agent/run":
             prompt, mrn, user = self._ask(b)
             return self.stream_agent(prompt, mrn, user, bool(b.get("ai", True)))
