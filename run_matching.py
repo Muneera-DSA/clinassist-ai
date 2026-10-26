@@ -26,14 +26,15 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from clinassist import matching as m  # noqa: E402
+from clinassist.sources import zt  # noqa: E402
 
 SQL = {
     "hospital": ("SELECT mrn, given_name, family_name, date_format(birth_date, 'yyyy-MM-dd') AS birth_date, sex "
-                 "FROM hospital_ehr.patients",
+                 f"FROM {zt('hospital_ehr.patients')}",
                  ["mrn", "given_name", "family_name", "birth_date", "sex"]),
-    "laboratory": ("SELECT lab_patient_id, surname, forenames, dob, gender FROM lab_lis.lab_patients",
+    "laboratory": (f"SELECT lab_patient_id, surname, forenames, dob, gender FROM {zt('lab_lis.lab_patients')}",
                    ["lab_patient_id", "surname", "forenames", "dob", "gender"]),
-    "pharmacy": ("SELECT pharm_patient_id, full_name, birth_date, sex FROM pharmacy_rx.pharmacy_patients",
+    "pharmacy": (f"SELECT pharm_patient_id, full_name, birth_date, sex FROM {zt('pharmacy_rx.pharmacy_patients')}",
                  ["pharm_patient_id", "full_name", "birth_date", "sex"]),
 }
 CSV = {"hospital": "hospital/patients.csv", "laboratory": "laboratory/lab_patients.csv",

@@ -26,10 +26,11 @@ class Reply:
     text: str
     model: str
     seconds: float
+    lane: str | None = None  # the Nightshift lane that actually answered (set by the agent)
 
 
 class NightshiftLLM:
-    def __init__(self, base_url: str, token: str, app: str, model: str, deep_model: str, timeout: int = 240):
+    def __init__(self, base_url: str, token: str, app: str, model: str, deep_model: str, timeout: int = 180):
         self.url = base_url.rstrip("/") + "/chat/completions"
         self._token = token
         self.app = app
@@ -49,20 +50,24 @@ class NightshiftLLM:
         return cls(os.environ["METERLESS_BASE_URL"], os.environ["METERLESS_RUNTIME_TOKEN"],
                    os.environ.get("METERLESS_APP", "clinassist-ai"),
                    os.environ.get("METERLESS_MODEL", "meterless/fast"),
-                   os.environ.get("METERLESS_MODEL_DEEP", "meterless/deep"))
+                   os.environ.get("METERLESS_MODEL_DEEP", "meterless/deep"),
+                   int(os.environ.get("METERLESS_TIMEOUT", "180")))
 
     def chat(self, system: str, user: str, deep: bool = False, max_tokens: int = 1500, temperature: float = 0.2,
              model: str | None = None) -> Reply:
         """model: an explicit Nightshift lane (e.g. from a Scout contract); otherwise fast, or deep if deep=True."""
         model = model or (self.deep_model if deep else self.model)
         t0 = time.time()
-        r = requests.post(self.url, timeout=self.timeout, headers={
-            "Authorization": "Bearer " + self._token, "meterless-app": self.app,
-            "meterless-scope": "user", "Content-Type": "application/json"},
-            json={"model": model, "temperature": temperature, "max_tokens": max_tokens,
-                  "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
+        try:
+            r = requests.post(self.url, timeout=self.timeout, headers={
+                "Authorization": "Bearer " + self._token, "meterless-app": self.app,
+                "meterless-scope": "user", "Content-Type": "application/json"},
+                json={"model": model, "temperature": temperature, "max_tokens": max_tokens,
+                      "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]})
+        except requests.RequestException as e:  # timeouts, refused connections: report as an AI failure, not a crash
+            raise LLMError(f"Nightshift unreachable on {model}: {type(e).__name__}") from e
         if r.status_code >= 400:
-            raise LLMError(f"Nightshift HTTP {r.status_code}: {r.text[:300]}")
+            raise LLMError(f"Nightshift HTTP {r.status_code} on {model}: {r.text[:300]}")
         body = r.json()
         msg = body["choices"][0]["message"]
         text = (msg.get("content") or "").strip()
@@ -90,10 +95,31 @@ def extract_json(text: str):
     return found
 
 
+BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d+[.)])\s+")
+
+
 def final_answer(text: str, marker: str = "#") -> str:
-    """Drop any thinking-aloud before the answer: keep from the first line that starts with `marker`."""
-    lines = text.splitlines()
-    for i, l in enumerate(lines):
-        if l.lstrip().startswith(marker):
-            return "\n".join(lines[i:]).strip()
+    """Keep only the answer when a reasoning model thinks aloud before it.
+
+    1. If there is a heading line (starts with `marker`), keep from the LAST one: thinking may mention the
+       heading, but the answer starts at the final heading.
+    2. Otherwise keep the trailing block of bullet lines (the answer is the bulleted list at the end) and
+       add the heading. 3. Otherwise return the text unchanged (the checker will judge it).
+    """
+    lines = text.strip().splitlines()
+    heads = [i for i, l in enumerate(lines) if l.lstrip().startswith(marker)]
+    if heads:
+        return "\n".join(lines[heads[-1]:]).strip()
+    start, style = None, None
+    for i in range(len(lines) - 1, -1, -1):
+        if not lines[i].strip():
+            continue
+        m = BULLET.match(lines[i])
+        kind = ("num" if m.group(0).strip()[0].isdigit() else "dash") if m else None
+        if m and style in (None, kind):  # the answer's bullets share one style; notes above it may use another
+            start, style = i, kind
+            continue
+        break
+    if start is not None and sum(1 for l in lines[start:] if BULLET.match(l)) >= 2:
+        return "# Pre-visit summary\n" + "\n".join(lines[start:]).strip()
     return text.strip()

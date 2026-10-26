@@ -17,6 +17,8 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from .sources import zt
+
 SAFE_ID = re.compile(r"^[A-Za-z0-9_.-]+$")
 
 # (zetaris table, csv path, id column, patient key column, date column, columns)
@@ -92,7 +94,7 @@ class ZetarisSource:
         where = f"{key_col} IN ({', '.join(repr(k) for k in keys)})"
         if since and date_col:
             where += f" AND {date_col} >= '{since}'"
-        return self.z.rows(f"SELECT {select} FROM {table} WHERE {where}", cols)
+        return self.z.rows(f"SELECT {select} FROM {zt(table)} WHERE {where}", cols)
 
 
 @dataclass

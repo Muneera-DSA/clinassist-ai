@@ -13,7 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from clinassist.agent import Agent, template_summary  # noqa: E402
 from clinassist.analysis import analyse, load_rules  # noqa: E402
-from clinassist.llm import Reply  # noqa: E402
+from clinassist.llm import LLMError, Reply, final_answer  # noqa: E402
 from clinassist.patient_record import CsvSource, load_record  # noqa: E402
 from clinassist.scout import Scout, load_patients  # noqa: E402
 
@@ -32,6 +32,17 @@ class StandInLLM:
         if "plan evidence retrieval" in system:
             return Reply(json.dumps({"steps": self.steps}), "stand-in-planner", 0.0)
         return Reply(template_summary(self.result), "stand-in-writer", 0.0)
+
+
+class DeepLaneDownLLM(StandInLLM):
+    """Like the 26 Oct benchmark: the deep lane's provider answers 404 'Function not found'; the fast lane works."""
+    model, deep_model = "meterless/fast", "meterless/deep"
+
+    def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
+        if (model or (self.deep_model if deep else self.model)) == "meterless/deep":
+            self.lanes.append("meterless/deep:failed")
+            raise LLMError("Nightshift HTTP 502 on meterless/deep: 404 Function not found")
+        return super().chat(system, user, deep, max_tokens, temperature, model or self.model)
 
 
 def main() -> None:
@@ -82,6 +93,15 @@ def main() -> None:
 
     r = Agent(None).run("Prepare a pre-visit summary", rec, result, rules)
     check("without Scout (backwards compatible): still runs", r.status == "verified-rules", r.status)
+
+    llm = DeepLaneDownLLM(result, summ.contract["plan"])
+    r = Agent(llm).run("Prepare a pre-visit summary", rec, result, rules, contract=summ.contract, require_contract=True)
+    fell_back = any(t["action"] == "lane-fallback" for t in r.trace)
+    check("writer lane down: retried on the fast lane and still verified", fell_back and r.status == "verified-ai",
+          f"{r.status} lanes={llm.lanes}")
+
+    thinking = "The user wants a summary. I need to cite.\nFirst, list findings.\n1. eGFR fell.\n\n- eGFR fell. [E-a]\n- BP low. [E-b]"
+    check("thinking-aloud before the answer is removed", final_answer(thinking) == "# Pre-visit summary\n- eGFR fell. [E-a]\n- BP low. [E-b]")
 
     print(f"\n{sum(checks)}/{len(checks)} checks passed")
     sys.exit(0 if all(checks) else 1)

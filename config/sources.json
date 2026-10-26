@@ -1,0 +1,22 @@
+{
+  "_comment": "How each source system is reached. 'tables' maps our name -> the name Zetaris shows (SHOW DATASOURCE TABLES). Change a name here if Zetaris registered it differently; nothing else needs editing.",
+  "systems": {
+    "hospital_ehr": {"label": "Hospital EHR", "engine": "Microsoft SQL Server 2022", "port": 55432, "id_type": "MRN"},
+    "lab_lis": {"label": "Laboratory LIS", "engine": "MySQL 8.4", "port": 55433, "id_type": "Lab patient ID"},
+    "pharmacy_rx": {"label": "Pharmacy", "engine": "PostgreSQL 16", "port": 55434, "id_type": "Pharmacy patient ID"}
+  },
+  "tables": {
+    "hospital_ehr.patients": "hospital_ehr.patients",
+    "hospital_ehr.encounters": "hospital_ehr.encounters",
+    "hospital_ehr.conditions": "hospital_ehr.conditions",
+    "hospital_ehr.procedures": "hospital_ehr.procedures",
+    "hospital_ehr.observations": "hospital_ehr.observations",
+    "hospital_ehr.allergies": "hospital_ehr.allergies",
+    "lab_lis.lab_patients": "lab_lis.lab_patients",
+    "lab_lis.lab_results": "lab_lis.lab_results",
+    "lab_lis.lab_reports": "lab_lis.lab_reports",
+    "pharmacy_rx.pharmacy_patients": "pharmacy_rx.pharmacy_patients",
+    "pharmacy_rx.prescriptions": "pharmacy_rx.prescriptions",
+    "pharmacy_rx.administrations": "pharmacy_rx.administrations"
+  }
+}

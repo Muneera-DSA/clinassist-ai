@@ -228,6 +228,33 @@ planner, deep → Ultra for the writer, judge → a Nemotron model different fro
 
 ---
 
+## 26 Oct: three database engines, the web app, and the first Nemotron benchmark
+
+**Sources on three engines.** The hospital EHR now runs on Microsoft SQL Server 2022 (port 55432), the laboratory
+on MySQL 8.4 (55433) and the pharmacy on PostgreSQL 16 (55434), each with an admin account for loading and a separate
+read-only account for Zetaris (`sources/docker-compose.yml`, `sources/init/`). The Zetaris driver image already ships
+the JDBC drivers (checked: mssql-jdbc 6.2.1, mysql-connector-j 8.4.0, MariaDB 3.4.0). Registration:
+`zetaris/01_register_sources.sql`. Table names Zetaris uses are configurable in `config/sources.json`.
+Status: PostgreSQL loader and read-only role tested; SQL Server and MySQL scripts to be verified on the laptop
+(`eval/audit_sources.py` must print ALL MATCH).
+
+**First Nemotron benchmark (`eval/bench_llm.py`, 3 patients x fast/deep): 0 of 6 AI summaries verified.** Causes and fixes:
+
+| Finding | Fix |
+|---|---|
+| The fast lane returned its reasoning before the answer, so the checker saw 20 uncited "sentences" | `llm.final_answer` keeps the last heading, or else the trailing bullet list |
+| The deep lane answered HTTP 502 "Function not found" (routed to a model the NVIDIA account cannot use) | `Agent._ask`: one retry on the fast lane, logged as `lane-fallback`; timeouts become AI errors, not crashes |
+| The checker rejected correct values such as "459.23 mg/g": value and unit are separate columns in the source row | `fact_text` also writes "value unit" side by side |
+
+After the fixes the real Kendrick draft from the benchmark passes the checker; verifier evaluation unchanged
+(87-91% of planted errors caught, 0/136 correct summaries rejected); tests 44/44 and 14/14. The benchmark must be
+re-run to measure the AI path.
+
+**Web app.** `server/` (standard-library Python API, live agent runs as Server-Sent Events, run history in
+`data/derived/runs/`) and `web/` (Angular 20; first compile check still pending at this commit). How to run and demo: `docs/run_the_demo.md`.
+
+---
+
 ## Security notes
 
 - Secrets live only in `.env` and `sources\.env` (both git-ignored) and in Nightshift's Providers tab.

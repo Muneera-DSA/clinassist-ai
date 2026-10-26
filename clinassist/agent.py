@@ -113,7 +113,13 @@ class Verdict:
 
 def fact_text(rec: PatientRecord, result: dict) -> dict[str, str]:
     """For every evidence id: the source row plus any finding/trend text built on it."""
-    facts = {i.eid: json.dumps(i.row, default=str) for i in rec.items}
+    facts = {}
+    for i in rec.items:
+        # The raw row, plus "value unit" written side by side: in the row the unit sits in its own field, so
+        # "459.23 mg/g" in a draft could not be matched to it (found in the 26 Oct Nemotron benchmark).
+        pairs = [f"{i.row.get(v)} {i.row.get(u) or ''}" for v, u in (("value_num", "unit"), ("dose_value", "dose_unit"))
+                 if i.row.get(v) not in (None, "")]
+        facts[i.eid] = json.dumps(i.row, default=str) + (" | " + " ; ".join(pairs) if pairs else "")
     for f in result["findings"]:
         for e in f["evidence"]:
             facts[e] = facts.get(e, "") + " " + f["title"] + " " + f["detail"]
@@ -261,6 +267,25 @@ class Agent:
             self._t("scout", "steps-outside-contract-dropped", dropped=[s.get("tool") for s in steps if s.get("tool") not in tools])
         return kept
 
+    def _ask(self, role: str, system: str, user: str, **kw):
+        """One AI call for a role, on the lane the Scout contract assigns. If that lane fails (the provider behind it
+        is down or not available to this account, or it times out), retry once on the fast lane and log it."""
+        lane = self._lane(role)
+        try:
+            reply = self.llm.chat(system, user, model=lane, **kw)
+            reply.lane = lane or (getattr(self.llm, "deep_model", None) if kw.get("deep") else getattr(self.llm, "model", None))
+            return reply
+        except LLMError as e:
+            fast = getattr(self.llm, "model", None)
+            used = lane or (getattr(self.llm, "deep_model", None) if kw.get("deep") else fast)
+            if not fast or used == fast:
+                raise
+            self._t(role, "lane-fallback", failed_lane=used, retry_lane=fast, error=str(e)[:160])
+            kw.pop("deep", None)
+            reply = self.llm.chat(system, user, model=fast, **kw)
+            reply.lane = fast
+            return reply
+
     def _t(self, agent: str, action: str, **detail):
         entry = {"t": round(time.time(), 2), "agent": agent, "action": action, **detail}
         self.trace.append(entry)
@@ -279,13 +304,13 @@ class Agent:
         catalog = {k: v for k, v in TOOL_HELP.items() if not self.contract or k in self.contract["tools"]}
         prompt = f"Task: {task}\nPatient overview: {json.dumps(header)}\nTool catalog: {json.dumps(catalog)}"
         try:
-            reply = self.llm.chat(PLANNER_SYSTEM, prompt, max_tokens=2000, model=self._lane("planner"))
+            reply = self._ask("planner", PLANNER_SYSTEM, prompt, max_tokens=2000)
             steps = extract_json(reply.text)["steps"]
             valid = self._allowed([s for s in steps if isinstance(s, dict) and s.get("tool") in TOOL_HELP])
             dropped = len(steps) - len(valid)
             if not valid:
                 raise ValueError("no valid steps")
-            self._t("planner", "plan", lane=self._lane("planner"), model=reply.model, seconds=reply.seconds, steps=valid,
+            self._t("planner", "plan", lane=reply.lane, model=reply.model, seconds=reply.seconds, steps=valid,
                     dropped_invalid=dropped)
             return valid
         except (LLMError, ValueError, KeyError, TypeError) as e:
@@ -313,9 +338,9 @@ class Agent:
         if feedback:
             msg += ("\n\nYour previous draft FAILED these checks. Fix every one; remove any sentence you cannot support:\n"
                     + json.dumps(feedback[:15]))
-        reply = self.llm.chat(WRITER_SYSTEM, msg, deep=self.writer_deep, max_tokens=4000, model=self._lane("writer"))
+        reply = self._ask("writer", WRITER_SYSTEM, msg, deep=self.writer_deep, max_tokens=4000)
         reply.text = final_answer(reply.text, "#")
-        self._t("writer", "draft", lane=self._lane("writer"), model=reply.model, seconds=reply.seconds, chars=len(reply.text),
+        self._t("writer", "draft", lane=reply.lane, model=reply.model, seconds=reply.seconds, chars=len(reply.text),
                 revision=bool(feedback), text=reply.text)
         return reply.text, "ai"
 

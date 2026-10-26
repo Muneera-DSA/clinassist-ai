@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from clinassist.sources import systems, zt  # noqa: E402
 from clinassist.zetaris_client import ZetarisClient  # noqa: E402
 
 D = Path("data/derived")
@@ -40,12 +41,14 @@ def main() -> None:
         c_sum = round(sum(float(r[num]) for r in rows if r[num] not in ("", None)), 2) if num else None
         sel = f"COUNT(*) AS n, COUNT(DISTINCT {pk}) AS k" + (f", ROUND(SUM({num}), 2) AS s" if num else "")
         cols = ["n", "k"] + (["s"] if num else [])
-        got = z.rows(f"SELECT {sel} FROM {table}", cols)[0]
+        got = z.rows(f"SELECT {sel} FROM {zt(table)}", cols)[0]
         z_n, z_pk = int(float(got["n"])), int(float(got["k"]))
         z_sum = round(float(got["s"]), 2) if num and got["s"] not in ("", None) else None
         match = z_n == c_n and z_pk == c_pk and (num is None or abs((z_sum or 0) - (c_sum or 0)) < 0.05)
         ok &= match
-        print(f"{'OK  ' if match else 'DIFF'} {table:32s} rows csv {c_n:6d} / zetaris {z_n:6d}   keys {c_pk:6d} / {z_pk:6d}"
+        engine = {"Microsoft SQL Server 2022": "SQL Server"}.get(systems()[table.split(".")[0]]["engine"],
+                                                               systems()[table.split(".")[0]]["engine"].split(" ")[0])
+        print(f"{'OK  ' if match else 'DIFF'} {table:32s} [{engine:20s}] rows csv {c_n:6d} / zetaris {z_n:6d}   keys {c_pk:6d} / {z_pk:6d}"
               + (f"   sum({num}) {c_sum} / {z_sum}" if num else ""))
     print("\nALL MATCH" if ok else "\nMISMATCH FOUND - see DIFF lines")
 

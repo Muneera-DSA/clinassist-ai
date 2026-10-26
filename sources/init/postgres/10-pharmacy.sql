@@ -1,4 +1,4 @@
--- Pharmacy system (simulated). Own patient IDs, 'SURNAME, Given' names, YYYYMMDD dates of birth.
+-- Pharmacy system on PostgreSQL 16 (simulated, synthetic data only). Own patient IDs, 'SURNAME, Given' names, YYYYMMDD dates of birth.
 -- Tables live in the default "public" schema so Zetaris LIST/REGISTER finds them.
 CREATE TABLE pharmacy_patients (pharm_patient_id text PRIMARY KEY, full_name text, birth_date text, sex text);
 CREATE TABLE prescriptions (rx_id text PRIMARY KEY, pharm_patient_id text REFERENCES pharmacy_patients,
