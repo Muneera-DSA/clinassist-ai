@@ -19,3 +19,4 @@ node_modules/
 
 # Archives of old/regenerable data
 data/*.zip
+data/reviews_v1_baseline/
