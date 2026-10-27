@@ -214,7 +214,7 @@ class Scout:
     INTENT_LABEL = {"summary.previsit": "a pre-visit summary", "finding.explain": "an explanation of a finding",
                     "medication.review": "a medicine review", "trend.review": "lab results and trends",
                     "gaps.review": "missing or overdue tests", "identity.review": "the linked source records",
-                    "admin.details": "patient details, visits and lab visits"}
+                    "admin.details": "patient details, visits and lab visits", "medication.list": "the active medicines list"}
     ROLE_NAME = {"clinician": "a clinician", "coordinator": "an insurance coordinator", "records_staff": "authorised hospital staff"}
 
     def role_can(self, role: str) -> str:

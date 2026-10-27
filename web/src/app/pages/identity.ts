@@ -76,6 +76,11 @@ import { EngineBadge, PatientPicker, SearchSelect, SearchOption } from '../ui/co
                     </div>
                   }
                 </div>
+                <div class="pager">
+                  <button class="btn sm" (click)="step(-1)" [disabled]="pos() <= 0">‹ Previous</button>
+                  <span class="small muted">Record <b>{{ pos() + 1 }}</b> of {{ shown().length }}</span>
+                  <button class="btn sm" (click)="step(1)" [disabled]="pos() >= shown().length - 1">Next ›</button>
+                </div>
             } @else { <p class="muted">Nothing waiting.</p> }
           </div>
         </div>
@@ -146,6 +151,7 @@ import { EngineBadge, PatientPicker, SearchSelect, SearchOption } from '../ui/co
     .sheet { width: min(1200px, 96vw); height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
     .sheet-body { overflow: auto; flex: 1; }
     .sheet-body .events { max-height: none; }
+    .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
     .qi { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
     .qi.done { background: var(--surface-2); }
     .pair { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
@@ -173,6 +179,11 @@ export class IdentityPage implements OnInit {
   reviewer = 'Dr Demo Reviewer';
   readonly provFull = signal(false);
   readonly selKey = signal<string>('');
+  readonly pos = computed(() => { const s = this.selected(); return s ? this.shown().indexOf(s) : -1; });
+  step(d: number): void {
+    const l = this.shown()[this.pos() + d];
+    if (l) this.selKey.set(`${l.system}:${l.record_id}`);
+  }
   readonly selected = computed(() => {
     const list = this.shown();
     return list.find((l) => `${l.system}:${l.record_id}` === this.selKey()) ?? list[0] ?? null;

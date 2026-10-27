@@ -171,6 +171,13 @@ def template_from_results(ctx: S.Ctx) -> str:
                      + (f" Deceased {out['deceased']}." if out.get("deceased") else ""))
             L += [f"- Linked {r['system']} record {r['record_id']} ({r['status']})." for r in out["linked_records"]]
             L += [f"- {r['system'].capitalize()} record {r['record_id']} is waiting for a person's identity decision." for r in out["pending_review"]]
+        if key == "list_active_medicines" and isinstance(out, dict) and out.get("medicines"):
+            L.append(f"## {out['n']} medicine(s) marked active")
+            for m in out["medicines"][:30]:
+                given = (f"administered {m['administered']} time(s), last on {m['last_administered']}" if m["administered"]
+                         else "no administration recorded")
+                ids = ", ".join(x for x in (m["eid"], m["admin_eid"]) if x)
+                L.append(f"- {m['medication']}: last prescribed {m['last_prescribed']}; {given} [{ids}].")
         if key == "list_visits" and isinstance(out, dict) and out.get("visits"):
             kinds = ", ".join(f"{v} {k}" for k, v in out["counts"].items())
             L.append(f"## Hospital visits in the review period: {out['n']} ({kinds})")
@@ -466,12 +473,12 @@ class Agent:
             r.summary = r.summary.rstrip() + "\n\n## Not found in the records\n" + "\n".join(f"- {n}" for n in self._nodata)
         return r
 
-    HEADINGS = {"admin.details": "Patient details and visits", "medication.review": "Medicine safety review", "finding.explain": "Flagged findings", "trend.review": "Lab results and trends",
+    HEADINGS = {"medication.list": "Active medicines", "admin.details": "Patient details and visits", "medication.review": "Medicine safety review", "finding.explain": "Flagged findings", "trend.review": "Lab results and trends",
                 "gaps.review": "Missing or overdue tests", "identity.review": "Linked records"}
 
     # ------------------------------------------------------------ "no data" answers
     FOCUS = ("list_lab_results", "compute_trend", "find_medication", "list_medications", "list_emergency_visits", "list_problems",
-             "list_visits", "list_lab_visits")
+             "list_visits", "list_lab_visits", "list_active_medicines")
 
     def no_data(self) -> tuple[list[str], int]:
         """Plain sentences for what was asked about but is not in the records, and how many focused results exist."""
@@ -502,6 +509,8 @@ class Agent:
                 notes.append(f"No prescription for {v.get('name')} is recorded for {who} in the hospital or pharmacy records.")
             elif name == "list_medications":
                 notes.append(f"No medicines are recorded for {who} in the pharmacy records.")
+            elif name == "list_active_medicines":
+                notes.append(f"No medicines are marked active for {who} in the pharmacy record.")
             elif name == "list_visits":
                 notes.append(f"No hospital visits or admissions are recorded for {who} {span}.")
             elif name == "list_lab_visits":

@@ -1,6 +1,6 @@
 {
   "_note": "ClinAssist implementation of the Meterless Scout Intent spec (sense, interpret, guard, route, recommend). Patterns are case-insensitive regular expressions with weights. Synthetic-data demonstration; every approved request still ends with a clinician's review.",
-  "version": "2026-10-27.7",
+  "version": "2026-10-27.8",
   "lanes": {
     "planner": "nvidia/nemotron-3.5-lightning-30b-a3b",
     "writer": "nvidia/nemotron-3.5-lightning-30b-a3b",
@@ -612,6 +612,47 @@
         "list_visits",
         "list_lab_visits",
         "get_identity_links"
+      ]
+    },
+    "medication.list": {
+      "description": "List the patient's active medicines with when each was last prescribed and administered: facts only, no safety review",
+      "patterns": [
+        [
+          "\\b(active|current|regular)\\s+(medicines?|medications?|drugs?|prescriptions?)\\b",
+          5
+        ],
+        [
+          "\\badministered\\b|\\bgiven to (him|her|the patient)\\b",
+          3
+        ],
+        [
+          "\\bwhat (medicines?|medications?|drugs?) (is|are|does)\\b",
+          4
+        ],
+        [
+          "\\bmedication list\\b|\\blist (of )?(his|her|the|all)? ?(medicines?|medications?)\\b",
+          4
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "list_active_medicines",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator"
+      ],
+      "allowed": [
+        "fetch_record",
+        "list_active_medicines",
+        "list_medications",
+        "find_medication"
       ]
     }
   },

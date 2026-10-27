@@ -38,7 +38,8 @@ export interface PatientReview {
   trends: Record<string, Trend>; medications: Medication[]; findings: Finding[]; timeline: TimelineEvent[];
   rules_version: string; sources: Record<string, { title: string; url?: string }>;
   evidence: Record<string, EvidenceItem>;
-  load: { mode: string; loaded_at: string; seconds: number; analysis_seconds: number; queries: ZQuery[]; items: number };
+  load: { mode: string; loaded_at: string; seconds: number; analysis_seconds: number; queries: ZQuery[]; items: number; meterless_run?: string;
+    supervised?: { id: string; kind: string; target: string; actor: string; allowed: boolean; reason: string; summary?: string; seconds?: number }[] };
 }
 export interface SystemsView { mrn: string; label: string; mode: string; queries: ZQuery[]; records: { system: string; engine: string; record_id: string; status: string; row: Record<string, string> }[]; }
 export interface IdentityLink { system: string; record_id: string; record_label: string; decision: string; mrn: string | null; hospital_label: string | null; score: number | null; runner_up_mrn: string | null; runner_up_score: number | null; reasons: string[]; reviewed?: boolean; review?: ReviewDecision | null; }

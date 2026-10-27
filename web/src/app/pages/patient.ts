@@ -17,7 +17,9 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
         <p>Only identity links that were automatic or confirmed by a person are used. Nothing dated after the review date is read.
           Every flag cites the exact source records; click any chip to open the row.</p>
       </div>
-      <div class="row"><ca-patient-picker /><button class="btn" (click)="load(true)" [disabled]="loading()">Reload through Zetaris</button></div>
+      <div class="head-actions"><ca-patient-picker />
+        <button class="btn reload" (click)="load(true)" [disabled]="loading()" title="Read this patient's record again from SQL Server, MySQL and PostgreSQL through Zetaris">
+          @if (loading()) { <span class="spinner"></span> Reloading… } @else { ↻ Reload through Zetaris }</button></div>
     </div>
     @if (error()) { <div class="notice bad mb">{{ error() }}</div> }
     @if (loading() && !p()) { <div class="card card-pad"><div class="row"><span class="spinner"></span> Reading the record from three systems through Zetaris…</div></div> }
@@ -107,6 +109,22 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
               </tbody>
             </table></div>
           </div>
+          @if (state.judge()) {
+            <div class="card">
+              <div class="card-head"><div><h2>Meterless supervision</h2><p>Every action of this page load, checked against the signed contract, approved or refused, and recorded@if (r.load.meterless_run) { (run <span class="mono">{{ r.load.meterless_run }}</span>) }.</p></div>
+                <span class="badge" [class.ok]="!refused()" [class.bad]="refused() > 0">{{ sup().length }} actions · {{ refused() }} refused</span></div>
+              <div class="card-body live-body">
+                @for (a of sup(); track a.id) {
+                  <div class="sup2" [class.deny]="!a.allowed">
+                    <span class="si">{{ a.allowed ? '✓' : '✕' }}</span>
+                    <span class="sk">{{ kindLabel(a.kind) }}</span>
+                    <span class="st2"><span class="mono">{{ a.target }}</span><span class="muted small">{{ a.allowed ? (a.summary ?? '') : a.reason }}</span></span>
+                    <span class="small faint">{{ a.seconds !== undefined && a.seconds !== null ? a.seconds + 's' : '' }}</span>
+                  </div>
+                } @empty { <p class="small muted">Nothing yet. Press Reload through Zetaris to record a fresh supervised load.</p> }
+              </div>
+            </div>
+          }
         </div>
 
         <div class="stack">
@@ -136,6 +154,8 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
     }
   </div>`,
   styles: [`
+    .head-actions { display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap; }
+    .head-actions .reload { height: 38px; white-space: nowrap; }
     .head { display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
     .idchip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 8px; padding: 3px 8px; font-size: 12px; background: var(--surface-2); }
     .idchip.pending { background: #fffaf3; border-color: #f8d7b0; }
@@ -148,6 +168,12 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
     .trend { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; gap: 4px; }
     .tl { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 10px; }
     .tl li { border-left: 3px solid var(--primary-soft); padding-left: 10px; }
+    .live-body { max-height: 420px; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+    .sup2 { display: grid; grid-template-columns: 18px 110px minmax(0, 1fr) 46px; gap: 8px; align-items: baseline; font-size: 12.5px; padding: 5px 8px; border-radius: 6px; background: var(--surface-2); }
+    .sup2 .si { font-weight: 800; color: var(--ok, #12805c); }
+    .sup2.deny { background: #fff6f5; } .sup2.deny .si { color: var(--high); }
+    .sup2 .sk { font-weight: 650; }
+    .sup2 .st2 { display: flex; flex-direction: column; min-width: 0; word-break: break-word; }
     .probs { margin: 0; padding-left: 18px; font-size: 13px; max-height: 360px; overflow: auto; }
   `],
 })
@@ -176,6 +202,12 @@ export class PatientPage {
       this.state.refreshPatients();
     } catch (e) { this.error.set(errorText(e)); }
     this.loading.set(false);
+  }
+
+  readonly sup = computed(() => this.p()?.load.supervised ?? []);
+  readonly refused = computed(() => this.sup().filter((a) => !a.allowed).length);
+  kindLabel(k: string): string {
+    return ({ 'script': 'script', 'data.fetch': 'Zetaris fetch', 'nightshift.chat': 'Nemotron', 'hmem.query': 'H-MEM', 'view': 'view' } as Record<string, string>)[k] ?? k;
   }
 
   sev(s: string): number { return (this.p()?.findings ?? []).filter((f) => f.severity === s).length; }

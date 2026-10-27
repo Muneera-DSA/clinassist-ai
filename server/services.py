@@ -466,7 +466,8 @@ class Services:
         sup.close("ok")
         entry = {"rec": rec, "result": result, "loaded_at": now_iso(), "mode": self.mode,
                  "load_seconds": round(t1 - t0, 2), "analysis_seconds": round(time.time() - t1, 3),
-                 "queries": rz.log if rz else [], "meterless_run": sup.run_id}
+                 "queries": rz.log if rz else [], "meterless_run": sup.run_id,
+                 "supervised": [dict(a) for a in sup.actions]}
         with self.lock:
             self.cache[key] = entry
         return entry
@@ -481,7 +482,8 @@ class Services:
         return {**r, "evidence": evidence,
                 "load": {"mode": e["mode"], "loaded_at": e["loaded_at"], "seconds": e["load_seconds"],
                          "analysis_seconds": e["analysis_seconds"], "queries": e["queries"],
-                         "items": len(e["rec"].items), "meterless_run": e.get("meterless_run")}}
+                         "items": len(e["rec"].items), "meterless_run": e.get("meterless_run"),
+                         "supervised": e.get("supervised", [])}}
 
     def evidence(self, mrn: str, eid: str) -> dict:
         e = self.load(mrn)
