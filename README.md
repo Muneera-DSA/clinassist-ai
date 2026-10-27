@@ -83,56 +83,153 @@ and date found in the cited record) and a second Nemotron reviewer have passed i
 
 ## Requirements
 
-- Windows 10/11 (tested), Docker Desktop
-- Python 3.12+ and Node.js 20.19+ (npm)
-- Zetaris (local Docker install) with an API key
-- Meterless Nightshift runtime with access to NVIDIA Nemotron (the NVIDIA key stays in Nightshift, never in this repo)
+- Windows 10/11 (tested) with PowerShell, and **Docker Desktop** running
+- **Python 3.12+** and **Node.js 20.19+** (with npm), plus Git
+- **Zetaris** (local Docker install) with an API key
+- **Meterless Nightshift** runtime with access to NVIDIA Nemotron (the NVIDIA key stays in Nightshift, never in this repo)
 
 Python dependencies: `requirements.txt` (`requests`, `python-dotenv`). Node dependencies: `package.json` (World Model,
 H-MEM, gateway via `tsx`) and `web/package.json` (Angular).
 
-## Setup
+> **PowerShell tip:** if `npm` or `npx` fails with *"running scripts is disabled on this system"*, use `npm.cmd` and
+> `npx.cmd` instead (as below). They do the same thing and need no policy change.
 
-From `C:\Hackathon\clinical-ai-assistant` in PowerShell:
+## Installation
+
+All commands run in PowerShell from the project folder unless a step says otherwise.
+
+### 1. Clone the repository
+
+```powershell
+git clone https://github.com/Muneera-DSA/clinassist-ai.git
+cd clinassist-ai
+```
+
+### 2. Create the Python environment
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
-npm.cmd install
-cd web; npm.cmd install; cd ..
-copy .env.example .env                    # Zetaris, Nightshift and Scout settings (never commit .env)
-copy sources\.env.example sources\.env    # your own database passwords
 ```
 
-Generate a Scout signing key for `.env`:
-`.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"`
-
-Start the databases and register them in Zetaris (details in `docs/run_the_demo.md`):
+### 3. Install the Node.js dependencies (Meterless gateway, World Model, H-MEM)
 
 ```powershell
-cd sources; docker compose up -d; docker compose ps; cd ..     # wait until all three are healthy
-# run zetaris/01_register_sources.sql in the Zetaris SQL editor (http://localhost:3000)
-.\.venv\Scripts\python.exe .\eval\audit_sources.py              # must end with ALL MATCH
+npm.cmd install
 ```
 
-Optional, once (needs internet): fetch the FDA label sections used by Medicine review.
+### 4. Install the Angular app dependencies
+
+```powershell
+cd web
+npm.cmd install
+cd ..
+```
+
+### 5. Configure the environment files
+
+```powershell
+copy .env.example .env                    # Zetaris, Meterless/Nightshift and Scout settings
+copy sources\.env.example sources\.env    # passwords for the three source databases
+```
+
+- In `sources\.env`, choose your own database passwords (admin and read-only user for each system).
+- In `.env`, fill in your Zetaris URL, organisation and API key, your Meterless runtime token, and a Scout signing key.
+  Generate the signing key with:
+  `.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"`
+- Both files are git-ignored. Never commit them or paste their values anywhere.
+
+### 6. Build the synthetic source data (once)
+
+`data/derived/` is not in git; it is regenerated from the Synthea files in `data/synthea_fhir/`.
+
+```powershell
+.\.venv\Scripts\python.exe .\clinassist_build_sources.py    # hospital, laboratory and pharmacy CSVs + answer key in data\derived\
+```
+
+### 7. Optional (needs internet): FDA label sections for Medicine review
+
+The saved labels are already in `reference/drug_labels.json`. To fetch them again:
 
 ```powershell
 .\.venv\Scripts\python.exe .\reference\fetch_drug_labels.py
 ```
 
-## Running
+---
 
-Three terminals, in this order:
+## Running the system
+
+Do the one-time steps (A–D) after installation, then start the three components (E–G), each in its own PowerShell window,
+**in this order**.
+
+### A. Start the source databases
 
 ```powershell
-npx.cmd tsx meterless/gateway/server.ts                         # 1. Meterless gateway, http://127.0.0.1:8090 (start first)
-.\.venv\Scripts\python.exe -m server                            # 2. backend, http://127.0.0.1:8000
-cd web; npx.cmd ng build --configuration development            # 3. build the web app once (served by the backend)
+cd sources
+docker compose up -d
+docker compose ps    # wait until all three show "healthy" (first run: 1–3 min; the CSVs load on first start)
+cd ..
+```
+
+### B. Register the sources in Zetaris (once)
+
+Open the Zetaris SQL editor at `http://localhost:3000`, run `zetaris/01_register_sources.sql` **one statement at a time**
+with the read-only passwords from `sources\.env` (details in `docs/run_the_demo.md`), then verify:
+
+```powershell
+.\.venv\Scripts\python.exe .\eval\audit_sources.py    # must end with ALL MATCH
+```
+
+### C. Match patients across the three systems (once)
+
+```powershell
+.\.venv\Scripts\python.exe .\run_matching.py --score    # data\derived\identity\ (links, review queue, report)
+```
+
+### D. Build the Meterless World Model of identities (once)
+
+```powershell
+npx.cmd tsx meterless/world/build_world.ts    # 112 patients, links and the records waiting for a person
+```
+
+### E. Start the Meterless gateway (window 1, start first)
+
+```powershell
+npx.cmd tsx meterless/gateway/server.ts    # http://127.0.0.1:8090
+```
+
+### F. Start the Python backend (window 2)
+
+```powershell
+.\.venv\Scripts\python.exe -m server                 # live data through Zetaris, http://127.0.0.1:8000
+# or, if Zetaris is not running (offline copy of the same CSVs):
+.\.venv\Scripts\python.exe -m server --source csv
+```
+
+### G. Build the web app (window 3)
+
+Build once and let the backend serve it:
+
+```powershell
+cd web
+npx.cmd ng build --configuration development
 ```
 
 Open **http://127.0.0.1:8000**, choose a role, and (for judges) switch on **Judge view** in the sidebar.
-For live reload during development use `cd web; npm.cmd start` (http://localhost:4200).
+
+For live reload during development instead: `cd web` then `npm.cmd start` and open **http://localhost:4200**
+(it forwards `/api` to the backend on port 8000).
+
+### Troubleshooting
+
+| Symptom | Fix |
+|---|---|
+| `npm`/`npx` "running scripts is disabled" | Use `npm.cmd` / `npx.cmd` |
+| A database is not "healthy" | `docker compose logs <service>` in `sources\`; check the passwords in `sources\.env` |
+| `audit_sources.py` does not print ALL MATCH | Re-run the registration statements in Zetaris; check the read-only passwords |
+| Answers fail with "gateway down" | Start the Meterless gateway (step E) before the backend |
+| Nemotron answers fail, rule-based ones work | Check the Meterless token in `.env` and that Nightshift is running |
+| Evaluation page is empty | The evaluation files are regenerated by the scripts in `eval\` (see `docs/ml_handoff.md`) |
 
 ## Try it
 
