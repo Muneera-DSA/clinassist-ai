@@ -29,11 +29,13 @@ interface Preset { label: string; sql: string; why: string; }
             <div><h2>{{ label(sys) }}</h2><p>{{ counts()?.systems?.[sys]?.engine }} · port {{ counts()?.systems?.[sys]?.port }} · {{ counts()?.systems?.[sys]?.id_type }}</p></div>
             <ca-engine [system]="sys" />
           </div>
+          <div class="schema small muted">Zetaris schema <span class="mono">{{ schemaOf(sys) }}</span></div>
           <div class="tbl-wrap"><table class="t counts">
-            <thead><tr><th>Table in Zetaris</th><th class="num">Zetaris</th><th class="num">File</th><th></th></tr></thead>
+            <colgroup><col class="c-name" /><col class="c-num" /><col class="c-num" /><col class="c-badge" /></colgroup>
+            <thead><tr><th>Table</th><th class="num">Zetaris</th><th class="num">File</th><th></th></tr></thead>
             <tbody>
               @for (t of tablesOf(sys); track t.table) {
-                <tr><td class="mono">{{ t.zetaris_name }}</td><td class="num">{{ t.rows_zetaris ?? '—' }}</td><td class="num muted">{{ t.rows_csv ?? '—' }}</td>
+                <tr><td class="mono" [title]="t.zetaris_name">{{ short(t.zetaris_name) }}</td><td class="num">{{ t.rows_zetaris ?? '—' }}</td><td class="num muted">{{ t.rows_csv ?? '—' }}</td>
                   <td>@if (t.match) { <span class="badge ok">match</span> } @else if (t.rows_zetaris !== null) { <span class="badge bad">diff</span> }</td></tr>
               } @empty { <tr><td colspan="4"><div class="skeleton"></div></td></tr> }
             </tbody>
@@ -96,10 +98,15 @@ interface Preset { label: string; sql: string; why: string; }
     </div>
   </div>`,
   styles: [`
-    .tbl-wrap { overflow-x: auto; }
-    .counts { width: 100%; table-layout: auto; }
+    .tbl-wrap { overflow: hidden; }
+    .schema { padding: 0 18px 8px; }
+    .counts { width: 100%; table-layout: fixed; }
+    .counts .c-name { width: auto; } .counts .c-num { width: 64px; } .counts .c-badge { width: 70px; }
+    .counts th, .counts td { padding-left: 8px; padding-right: 8px; }
     .counts th { white-space: nowrap; }
-    .counts td.mono { word-break: break-all; }
+    .counts td { vertical-align: middle; }
+    .counts td.mono { overflow-wrap: anywhere; }
+    .grid.g3 > .card { display: flex; flex-direction: column; }
     .sqlnote pre { white-space: pre-wrap; word-break: break-word; }
     .card-head { flex-wrap: wrap; gap: 10px; }
     .rec { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--surface-2); }
@@ -110,6 +117,8 @@ interface Preset { label: string; sql: string; why: string; }
 export class SourcesPage implements OnInit {
   readonly state = inject(AppState);
   private api = inject(Api);
+  short(n: string): string { return (n ?? '').split('.').pop() ?? n; }
+  schemaOf(sys: string): string { const t = this.tablesOf(sys)[0]; return t?.zetaris_name?.split('.')[0] ?? sys; }
   readonly systemKeys = ['hospital_ehr', 'lab_lis', 'pharmacy_rx'];
   readonly counts = signal<SourceCounts | null>(null);
   readonly loading = signal(false);

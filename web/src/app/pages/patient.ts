@@ -109,22 +109,6 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
               </tbody>
             </table></div>
           </div>
-          @if (state.judge()) {
-            <div class="card">
-              <div class="card-head"><div><h2>Meterless supervision</h2><p>Every action of this page load, checked against the signed contract, approved or refused, and recorded@if (r.load.meterless_run) { (run <span class="mono">{{ r.load.meterless_run }}</span>) }.</p></div>
-                <span class="badge" [class.ok]="!refused()" [class.bad]="refused() > 0">{{ sup().length }} actions · {{ refused() }} refused</span></div>
-              <div class="card-body live-body">
-                @for (a of sup(); track a.id) {
-                  <div class="sup2" [class.deny]="!a.allowed">
-                    <span class="si">{{ a.allowed ? '✓' : '✕' }}</span>
-                    <span class="sk">{{ kindLabel(a.kind) }}</span>
-                    <span class="st2"><span class="mono">{{ a.target }}</span><span class="muted small">{{ a.allowed ? (a.summary ?? '') : a.reason }}</span></span>
-                    <span class="small faint">{{ a.seconds !== undefined && a.seconds !== null ? a.seconds + 's' : '' }}</span>
-                  </div>
-                } @empty { <p class="small muted">Nothing yet. Press Reload through Zetaris to record a fresh supervised load.</p> }
-              </div>
-            </div>
-          }
         </div>
 
         <div class="stack">
@@ -149,6 +133,22 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
               @for (c of r.active_conditions; track $index) { <li><span>{{ c.display }}</span> <span class="faint small">since {{ c.onset }}</span></li> }
             </ul></div>
           </div>
+          @if (state.judge()) {
+            <div class="card">
+              <div class="card-head"><div><h2>Meterless supervision</h2><p>Every action of this page load, checked against the signed contract, approved or refused, and recorded@if (r.load.meterless_run) { (run <span class="mono">{{ r.load.meterless_run }}</span>) }.</p></div>
+                <span class="badge" [class.ok]="!refused()" [class.bad]="refused() > 0">{{ sup().length }} actions · {{ refused() }} refused</span></div>
+              <div class="card-body live-body">
+                @for (a of sup(); track a.id) {
+                  <div class="sup2" [class.deny]="!a.allowed">
+                    <span class="si">{{ a.allowed ? '✓' : '✕' }}</span>
+                    <span class="sk">{{ kindLabel(a.kind) }}</span>
+                    <span class="st2"><span class="mono">{{ a.target }}</span><span class="muted small">{{ a.allowed ? (a.summary ?? '') : a.reason }}</span></span>
+                    <span class="small faint">{{ a.seconds !== undefined && a.seconds !== null ? a.seconds + 's' : '' }}</span>
+                  </div>
+                } @empty { <p class="small muted">Nothing yet. Press Reload through Zetaris to record a fresh supervised load.</p> }
+              </div>
+            </div>
+          }
         </div>
       </div>
     }
