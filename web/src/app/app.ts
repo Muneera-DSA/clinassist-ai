@@ -126,7 +126,7 @@ export class App implements OnInit {
   readonly state = inject(AppState);
   readonly nav: NavItem[] = [
     { path: '/overview', label: 'Overview', hint: 'The problem and the live system', icon: '' },
-    { path: '/sources', label: 'Fragmented data', hint: 'SQL Server · MySQL · PostgreSQL via Zetaris', icon: '' },
+    { path: '/sources', label: 'Fragmented intelligence', hint: 'SQL Server · MySQL · PostgreSQL via Zetaris', icon: '' },
     { path: '/identity', label: 'Identity resolution', hint: 'Matcher + Meterless World Model', icon: '' },
     { path: '/patient', label: 'Patient review', hint: '3-year evidence-linked analysis', icon: '' },
     { path: '/prescriptions', label: 'Medicine review', hint: 'History · safety flags · FDA labels', icon: '' },

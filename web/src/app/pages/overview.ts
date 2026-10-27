@@ -14,13 +14,15 @@ import { Check, EngineBadge } from '../ui/components';
       <div class="hero-text">
         <div class="eyebrow">Open Agent Hackathon 2026 · Reasoning Architecture</div>
         <h1>A patient's story is split across systems that don't talk to each other.</h1>
-        <p>The hospital, the outside laboratory and the pharmacy each keep their own records, on different databases, with
-          different patient numbers and differently written names. When a doctor asks a question, <b>Meterless</b> supervises
-          everything: <b>Scout</b> checks the request and signs a contract, then every action is approved against that contract
-          and recorded in the <b>Meterless World Model</b>. <b>NVIDIA Nemotron</b> (through <b>Meterless Nightshift</b>) leads
-          the analysis: it chooses which single-purpose scripts to run, reads their results, decides what they mean and writes
-          the answer. Data comes only through <b>Zetaris</b>. A fact-check and a second Nemotron reviewer verify every sentence.
-          It never diagnoses or prescribes.</p>
+        <p>The hospital, the external laboratory and the external pharmacy each keep their own records, on different systems
+          and platforms, with different patient number formats and differently written name and date of birth formats. When a
+          doctor asks a question, <b>Meterless</b> supervises everything: <b>Scout</b> checks the request and signs a contract,
+          then every action is approved against that contract and recorded in the <b>Meterless World Model</b>. The respective
+          models available in <b>Meterless Nightshift</b> (one each on the planner, interpreter, writer and judge lanes) lead
+          the analysis: they choose which single-purpose scripts to run, read their results, decide what they mean and write
+          the answer. Data comes only through the <b>Zetaris</b> aggregator, after it fetches from the fragmented data sources
+          across the different platforms. A fact-check and a second reviewer model verify every sentence. It never diagnoses
+          or prescribes.</p>
         <div class="row mt">
           <a class="btn primary" routerLink="/ask">Run the agent live →</a>
           <a class="btn" routerLink="/sources">Start the guided demo</a>
@@ -56,43 +58,10 @@ import { Check, EngineBadge } from '../ui/components';
     </section>
 
     <h2 class="sec">How a request flows</h2>
-    <div class="flow-wrap">
-    <div class="flow">
-      @for (f of flow; track f.title; let i = $index; let last = $last) {
-        <div class="fcard" [style.--c]="f.color" [class.on]="f.live === undefined || f.live()" [style.grid-column]="(2 * i + 1)">
-          <div class="ftop">
-            <span class="ficon" [innerHTML]="f.icon"></span>
-            <span class="fnum">{{ (i + 1).toString().padStart(2, '0') }}</span>
-          </div>
-          <div class="ftitle">{{ f.title }}</div>
-          @if (f.title === 'Zetaris') {
-            <div class="engines"><ca-engine system="hospital_ehr" /><ca-engine system="lab_lis" /><ca-engine system="pharmacy_rx" /></div>
-          }
-          @if (f.loop) {
-            <div class="loopgrid"><span>Choose</span><span>⇄</span><span>Read</span><span>⇅</span><span></span><span>⇅</span><span>Judge</span><span>⇄</span><span>Write</span></div>
-          }
-          <div class="ftext">{{ f.text }}</div>
-          <div class="ftag">{{ f.tag }}</div>
-        </div>
-        @if (!last) {
-          <div class="conn" [style.grid-column]="(2 * i + 2)" [class.both]="f.next === '⇄'">
-            <svg viewBox="0 0 34 24" aria-hidden="true">
-              <defs><marker [attr.id]="'ah' + i" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto-start-reverse">
-                <path d="M0,0 L7,3.5 L0,7 z" fill="currentColor" /></marker></defs>
-              @if (f.next === '⇄') {
-                <line x1="3" y1="8" x2="30" y2="8" stroke="currentColor" stroke-width="1.8" [attr.marker-end]="'url(#ah' + i + ')'" />
-                <line x1="31" y1="16" x2="4" y2="16" stroke="currentColor" stroke-width="1.8" [attr.marker-end]="'url(#ah' + i + ')'" />
-              } @else {
-                <line x1="2" y1="12" x2="30" y2="12" stroke="currentColor" stroke-width="2" [attr.marker-end]="'url(#ah' + i + ')'" />
-              }
-            </svg>
-          </div>
-        }
-      }
-      <div class="retry" style="grid-column: 5 / 12">
-        <span class="retry-label">↺ Unsupported sentence or failed judge: sent back to Nemotron to rewrite (up to 3 rounds), else escalated to a person</span>
-      </div>
-    </div>
+    <div class="card flowimg">
+      <a href="request-flow.png" target="_blank" rel="noopener" title="Open full size">
+        <img src="request-flow.png" alt="How a request flows: user, Meterless Scout, Meterless H-MEM, Nemotron via Nightshift, supervised script run, Zetaris, writer and checks, cited answer; with the script loop, the retry loop and the learning loop" />
+      </a>
     </div>
 
     <h2 class="sec">Results on our synthetic test data</h2>
@@ -127,6 +96,7 @@ import { Check, EngineBadge } from '../ui/components';
     .hs-title { font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
     .sysline { padding-left: 18px; }
     .sec { margin: 28px 0 12px; }
+    .flowimg { padding: 10px; overflow: hidden; } .flowimg img { display: block; width: 100%; height: auto; border-radius: 8px; }
     .flow-wrap { overflow-x: auto; padding-bottom: 4px; }
     .flow { display: grid; grid-template-columns: repeat(6, minmax(140px, 1fr) 34px) minmax(140px, 1fr); row-gap: 0; align-items: stretch; min-width: 1150px; }
     .fcard { --c: #475467; position: relative; display: flex; flex-direction: column; gap: 8px; padding: 14px 13px 13px;
@@ -174,7 +144,7 @@ export class OverviewPage implements OnInit {
     { title: 'Meterless — the supervisor', tag: 'Meterless', color: '#0f766e', next: '→', live: () => !!this.s()?.meterless?.ok,
       icon: this.svg('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>'),
       text: 'Scout checks the request, blocks unsafe ones and signs a 15-minute contract. Every action is approved and recorded in the World Model.' },
-    { title: 'Nightshift routes to Nemotron — the boss', tag: 'NVIDIA Nemotron', color: '#4d7c0f', next: '⇄', loop: true, live: () => !!this.s()?.nightshift?.ok,
+    { title: 'Nightshift routes to Nemotron', tag: 'NVIDIA Nemotron', color: '#4d7c0f', next: '⇄', loop: true, live: () => !!this.s()?.nightshift?.ok,
       icon: this.svg('<path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/><circle cx="12" cy="12" r="3"/>'),
       text: 'Nightshift takes each step to the right Nemotron model through its lanes. Nemotron makes every decision.' },
     { title: 'Single-action scripts', tag: 'Python · H-MEM catalog', color: '#475467', next: '⇄',
@@ -214,7 +184,7 @@ export class OverviewPage implements OnInit {
     return t ? `${t.filter((x) => x.match).length} / ${t.length}` : '—';
   });
   readonly demo = [
-    { path: '/sources', title: 'Fragmented data, one window', text: 'Three engines, one federated query. The same man written three different ways.' },
+    { path: '/sources', title: 'Fragmented intelligence, one window', text: 'Three engines, one federated query. The same man written three different ways.' },
     { path: '/identity', title: 'Who is who, safely', text: 'Scores and reasons for every link; a person confirms the uncertain ones in the World Model.' },
     { path: '/patient', title: 'Three years, evidence-linked', text: 'Kidney decline, unsafe medicine, missing tests: every flag opens its source record.' },
     { path: '/ask', title: 'Ask, and watch it reason', text: 'Meterless approves, Nemotron picks the scripts and decides, the fact-check verifies or sends it back.' },

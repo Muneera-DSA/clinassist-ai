@@ -12,7 +12,7 @@ const forRole: CanActivateFn = (route) => {
 export const routes: Routes = [
   { path: '', pathMatch: 'full', redirectTo: 'overview' },
   { path: 'overview', canActivate: [forRole], loadComponent: () => import('./pages/overview').then((m) => m.OverviewPage), title: 'Overview · ClinAssist AI' },
-  { path: 'sources', canActivate: [forRole], loadComponent: () => import('./pages/sources').then((m) => m.SourcesPage), title: 'Data sources · ClinAssist AI' },
+  { path: 'sources', canActivate: [forRole], loadComponent: () => import('./pages/sources').then((m) => m.SourcesPage), title: 'Fragmented intelligence · ClinAssist AI' },
   { path: 'identity', canActivate: [forRole], loadComponent: () => import('./pages/identity').then((m) => m.IdentityPage), title: 'Identity · ClinAssist AI' },
   { path: 'patient', canActivate: [forRole], loadComponent: () => import('./pages/patient').then((m) => m.PatientPage), title: 'Patient review · ClinAssist AI' },
   { path: 'prescriptions', canActivate: [forRole], loadComponent: () => import('./pages/prescriptions').then((m) => m.PrescriptionsPage), title: 'Medicine review · ClinAssist AI' },

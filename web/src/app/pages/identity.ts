@@ -95,6 +95,35 @@ import { EngineBadge, PatientPicker, SearchSelect, SearchOption } from '../ui/co
       </div>
 
       <div class="card mt">
+        <div class="card-head"><div><h2>All matched patients</h2>
+          <p>One row per hospital patient: name and date of birth, and the laboratory and pharmacy records matched to them. Click a row to see it in detail below.</p></div>
+          <label class="field mq-search">Search
+            <input class="input" [ngModel]="mq()" (ngModelChange)="mq.set($event); mpage.set(0)" placeholder="Name, date of birth, MRN or record ID" list="mq-list" />
+            <datalist id="mq-list">@for (o of mqSuggest(); track o) { <option [value]="o"></option> }</datalist>
+          </label></div>
+        <div class="card-body">
+          <div class="tbl-wrap"><table class="t mtab">
+            <thead><tr><th>Patient</th><th>Date of birth</th><th>Sex</th><th>Hospital MRN</th><th>Laboratory record</th><th>Pharmacy record</th></tr></thead>
+            <tbody>
+              @for (m of mPageRows(); track m.mrn) {
+                <tr class="click" [class.sel]="m.mrn === state.mrn()" (click)="state.selectPatient(m.mrn)">
+                  <td><b>{{ m.name }}</b></td><td class="mono">{{ m.dob || '—' }}</td><td>{{ m.sex || '—' }}</td>
+                  <td class="mono">{{ m.mrn }}</td>
+                  <td>@for (x of m.laboratory; track x.record_id) { <div class="mr"><span class="mono">{{ x.record_id }}</span> <span class="badge" [class]="'badge ' + stCls(x.status)">{{ stText(x.status) }}</span></div> } @empty { <span class="faint">no record</span> }</td>
+                  <td>@for (x of m.pharmacy; track x.record_id) { <div class="mr"><span class="mono">{{ x.record_id }}</span> <span class="badge" [class]="'badge ' + stCls(x.status)">{{ stText(x.status) }}</span></div> } @empty { <span class="faint">no record</span> }</td>
+                </tr>
+              } @empty { <tr><td colspan="6" class="muted">@if (view()) { No patient matches “{{ mq() }}”. } @else { Loading… }</td></tr> }
+            </tbody>
+          </table></div>
+          <div class="pager">
+            <button class="btn sm" (click)="mpage.set(mpage() - 1)" [disabled]="mpage() <= 0">‹ Previous</button>
+            <span class="small muted">@if (mFiltered().length) { {{ mpage() * MPAGE + 1 }}–{{ mMin() }} of {{ mFiltered().length }} patients · page {{ mpage() + 1 }} of {{ mPages() }} } @else { 0 patients }</span>
+            <button class="btn sm" (click)="mpage.set(mpage() + 1)" [disabled]="mpage() >= mPages() - 1">Next ›</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
         <div class="card-head"><div><h2>Matched records for this patient</h2>
           <p>The same person's ID, name, date of birth and sex in each system, read live through Zetaris. Records waiting for a person are shown too, marked.</p></div>
           <ca-patient-picker /></div>
@@ -151,6 +180,10 @@ import { EngineBadge, PatientPicker, SearchSelect, SearchOption } from '../ui/co
     .sheet { width: min(1200px, 96vw); height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
     .sheet-body { overflow: auto; flex: 1; }
     .sheet-body .events { max-height: none; }
+    .mq-search { width: 320px; max-width: 100%; }
+    .mtab tr.sel td { background: #eef7f5; }
+    .mtab .mr { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    .mtab .mr + .mr { margin-top: 4px; }
     .pager { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 10px; }
     .qi { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
     .qi.done { background: var(--surface-2); }
@@ -179,6 +212,22 @@ export class IdentityPage implements OnInit {
   reviewer = 'Dr Demo Reviewer';
   readonly provFull = signal(false);
   readonly selKey = signal<string>('');
+  readonly MPAGE = 10;
+  readonly mq = signal('');
+  readonly mpage = signal(0);
+  readonly mFiltered = computed(() => {
+    const w = this.mq().toLowerCase().split(/\s+/).filter(Boolean);
+    return (this.view()?.matched ?? []).filter((m) => {
+      const t = `${m.name} ${m.dob ?? ''} ${m.sex ?? ''} ${m.mrn} ${m.laboratory.map((x) => x.record_id).join(' ')} ${m.pharmacy.map((x) => x.record_id).join(' ')}`.toLowerCase();
+      return w.every((x) => t.includes(x));
+    });
+  });
+  readonly mPages = computed(() => Math.max(1, Math.ceil(this.mFiltered().length / this.MPAGE)));
+  readonly mPageRows = computed(() => { const p = Math.min(this.mpage(), this.mPages() - 1); return this.mFiltered().slice(p * this.MPAGE, (p + 1) * this.MPAGE); });
+  readonly mMin = computed(() => Math.min((this.mpage() + 1) * this.MPAGE, this.mFiltered().length));
+  readonly mqSuggest = computed(() => this.mq().length < 1 ? [] : this.mFiltered().slice(0, 8).map((m) => `${m.name} ${m.dob ?? ''}`.trim()));
+  stText(s: string): string { return ({ linked: 'linked automatically', confirmed: 'confirmed by a person', rejected: 'rejected by a person', pending: 'waiting for a person' } as Record<string, string>)[s] ?? s; }
+  stCls(s: string): string { return ({ linked: 'ok', confirmed: 'primary', rejected: 'bad', pending: 'review' } as Record<string, string>)[s] ?? 'neutral'; }
   readonly pos = computed(() => { const s = this.selected(); return s ? this.shown().indexOf(s) : -1; });
   step(d: number): void {
     const l = this.shown()[this.pos() + d];

@@ -44,7 +44,9 @@ export interface PatientReview {
 export interface SystemsView { mrn: string; label: string; mode: string; queries: ZQuery[]; records: { system: string; engine: string; record_id: string; status: string; row: Record<string, string> }[]; }
 export interface IdentityLink { system: string; record_id: string; record_label: string; decision: string; mrn: string | null; hospital_label: string | null; score: number | null; runner_up_mrn: string | null; runner_up_score: number | null; reasons: string[]; reviewed?: boolean; review?: ReviewDecision | null; }
 export interface ReviewDecision { system: string; record_id: string; mrn: string; action: string; by: string; at: string; note?: string; }
-export interface IdentityView { report: any; queue: IdentityLink[]; decisions: ReviewDecision[]; world: Record<string, any>; auto_links: number; total_records: number; }
+export interface MatchedRecord { record_id: string; label: string | null; status: 'linked' | 'confirmed' | 'rejected' | 'pending'; score: number | null; }
+export interface MatchedPatient { mrn: string; name: string; dob: string | null; sex: string | null; laboratory: MatchedRecord[]; pharmacy: MatchedRecord[]; }
+export interface IdentityView { report: any; queue: IdentityLink[]; decisions: ReviewDecision[]; world: Record<string, any>; auto_links: number; total_records: number; matched?: MatchedPatient[]; }
 export interface ProvenanceEvent { seq: number; at: string; kind: string; type: string; from: string; to: string | null; value: unknown; confidence: number | null; attrs: any; source: { kind: string; by: string; at: string; runId: string }; }
 export interface ScoutDecision {
   status: 'approved' | 'clarify' | 'blocked'; message: string;

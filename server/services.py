@@ -346,7 +346,23 @@ class Services:
                 continue
             d = decided.get((l["system"], l["record_id"]))
             queue.append({**l, "reviewed": bool(d), "review": d})
+        matched: dict[str, dict] = {}
+        for l in links:
+            mrn = l.get("mrn")
+            if not mrn:
+                continue
+            m = re.match(r"\s*(.*?)\s*\((\S+?),\s*(\w+)\)\s*$", l.get("hospital_label") or "")
+            row = matched.setdefault(mrn, {"mrn": mrn, "name": m.group(1) if m else (l.get("hospital_label") or mrn),
+                                           "dob": m.group(2) if m else None, "sex": m.group(3) if m else None,
+                                           "laboratory": [], "pharmacy": []})
+            d = decided.get((l["system"], l["record_id"]))
+            status = ("linked" if l["decision"] == "auto-link" else
+                      ("confirmed" if d["action"] == "approve" else "rejected") if d else "pending")
+            if l["system"] in row:
+                row[l["system"]].append({"record_id": l["record_id"], "label": l.get("record_label"), "status": status,
+                                         "score": l.get("score")})
         return {"report": report, "queue": queue, "decisions": decisions, "world": self.world_summary(),
+                "matched": sorted(matched.values(), key=lambda r: r["name"]),
                 "auto_links": sum(1 for l in links if l["decision"] == "auto-link"),
                 "total_records": len(links)}
 
@@ -578,7 +594,7 @@ class Services:
                 self.gateway.post("/hmem/lessons", {
                     "run_id": run_id, "confidence": 0.7 if res["status"] == "verified-ai" else 0.5,
                     "tags": [str((decision.get("intent") or {}).get("primary")), res["status"]],
-                    "content": f"For a '{(decision.get('intent') or {}).get('primary')}' request the boss ran "
+                    "content": f"For a '{(decision.get('intent') or {}).get('primary')}' request Nemotron ran "
                                f"{', '.join(dict.fromkeys(c['tool'] for c in res['plan']))}; result {res['status']} after "
                                f"{res['rounds']} round(s)."})
         except MeterlessUnavailable:
