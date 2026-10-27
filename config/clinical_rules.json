@@ -1,6 +1,6 @@
 {
   "_note": "Synthetic-data demonstration rule set. Thresholds come from the cited public sources, but the rule set is NOT validated for clinical use and every flag is for a qualified professional to review. Reference bands marked illustrative are generic adult values for display only.",
-  "version": "2026-10-25.2",
+  "version": "2026-10-27.1",
   "analytes": {
     "egfr": {
       "label": "eGFR",
@@ -179,6 +179,38 @@
     "low_bp_rule": {
       "title": "Low blood pressure check (internal rule): systolic below 90 mmHg on the last two readings while blood-pressure medicines are active (a commonly used threshold for hypotension)",
       "url": null
+    },
+    "fda_opioid_benzo_2016": {
+      "title": "FDA Drug Safety Communication (Aug 2016): boxed warning on combined use of opioid pain or cough medicines with benzodiazepines (profound sedation, respiratory depression, coma, death)",
+      "url": "https://www.fda.gov/drugs/drug-safety-and-availability/fda-drug-safety-communication-fda-warns-about-serious-risks-and-death-when-combining-opioid-pain-or"
+    },
+    "entresto_label": {
+      "title": "ENTRESTO (sacubitril/valsartan) US prescribing information: contraindicated with an ACE inhibitor (allow 36 hours when switching); do not combine with another ARB",
+      "url": "https://www.accessdata.fda.gov/drugsatfda_docs/label/2024/218591Orig1s000%2C207620Orig1s025lbl.pdf"
+    },
+    "ontarget_2008": {
+      "title": "ONTARGET (Yusuf et al., NEJM 2008): ramipril plus telmisartan gave no extra benefit and more adverse events, including kidney problems and hyperkalaemia",
+      "url": "https://doi.org/10.1056/NEJMoa0801317"
+    },
+    "nsaid_label_bleeding": {
+      "title": "NSAID US prescribing information (class labeling), GI bleeding warning: risk increases with concomitant anticoagulants and antiplatelet agents",
+      "url": "https://dailymed.nlm.nih.gov/"
+    },
+    "p2y12_rule": {
+      "title": "Duplicate antiplatelet check (internal rule): two different P2Y12 inhibitors (clopidogrel, prasugrel, ticagrelor) active at once",
+      "url": null
+    },
+    "lapi_2013": {
+      "title": "Lapi et al., BMJ 2013;346:e8525: triple therapy of diuretic + ACE inhibitor/ARB + NSAID associated with increased risk of acute kidney injury",
+      "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC3541472/"
+    },
+    "masnoon_2017": {
+      "title": "Masnoon et al., BMC Geriatrics 2017;17:230, What is polypharmacy? A systematic review of definitions (five or more medicines is the most common)",
+      "url": "https://pubmed.ncbi.nlm.nih.gov/29017448/"
+    },
+    "ags_beers_2023": {
+      "title": "American Geriatrics Society 2023 Updated AGS Beers Criteria for potentially inappropriate medication use in older adults (J Am Geriatr Soc 2023)",
+      "url": "https://psnet.ahrq.gov/issue/american-geriatrics-society-2023-updated-ags-beers-criteria-potentially-inappropriate"
     }
   },
   "pattern_skip": [

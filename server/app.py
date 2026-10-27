@@ -24,7 +24,11 @@ API (all JSON; POST bodies are JSON):
     POST /api/identity/rematch            {"by"}  supervised batch job: re-run matching, rebuild the World Model view
     GET  /api/meterless/runs[/<id>]       World Model record of every supervised run (request, decision, actions)
     POST /api/scout                       {"prompt","mrn","role","user"}
-    POST /api/agent/run                   {"prompt","mrn","role","user","ai"}  -> Server-Sent Events, step by step
+    POST /api/agent/run                   {"prompt","mrn","role","user","ai","history"}  -> Server-Sent Events, step by step
+    POST /api/feedback                    {"run_id","rating":"up|down","comment","user","role"}  -> lesson in Meterless H-MEM
+    GET  /api/feedback                    what ClinAssist has learned from people
+    GET  /api/patients/<mrn>/prescriptions   medicine review: full history, safety flags, saved FDA label sections
+    GET  /api/scripts                     the single-action scripts Nemotron can choose from, and what each is for
     GET  /api/runs  /api/runs/<id>        saved agent runs (audit trail)
     GET  /api/evaluation                  saved evaluation results
 """
@@ -144,6 +148,13 @@ class Handler(BaseHTTPRequestHandler):
             m = re.fullmatch(r"/api/runs/([A-Za-z0-9_.-]+)", path)
             if m:
                 return self.json(s.run(m.group(1)))
+            if path == "/api/feedback":
+                return self.json(s.feedback_list())
+            m = re.fullmatch(r"/api/patients/([A-Za-z0-9]+)/prescriptions", path)
+            if m:
+                return self.json(s.prescriptions(m.group(1), fresh))
+            if path == "/api/scripts":
+                return self.json(s.scripts())
             if path == "/api/evaluation":
                 return self.json(s.evaluation())
             if path == "/api/meterless/runs":
@@ -167,7 +178,14 @@ class Handler(BaseHTTPRequestHandler):
             return self.json(s.scout_decide(prompt, mrn, user, bool(b.get("ai", True))))
         if path == "/api/agent/run":
             prompt, mrn, user = self._ask(b)
-            return self.stream_agent(prompt, mrn, user, bool(b.get("ai", True)))
+            history = b.get("history") if isinstance(b.get("history"), list) else []
+            return self.stream_agent(prompt, mrn, user, bool(b.get("ai", True)), history[-3:])
+        if path == "/api/feedback":
+            role = str(b.get("role", "clinician"))
+            if role not in ROLES:
+                raise ValueError(f"role must be one of {sorted(ROLES)}")
+            user = {"id": re.sub(r"[^A-Za-z0-9 ._-]", "", str(b.get("user", "demo-user")))[:40] or "demo-user", "role": role}
+            return self.json(s.feedback(str(b.get("run_id", "")), str(b.get("rating", "")), str(b.get("comment", "")), user))
         return self.error(404, "unknown endpoint")
 
     @staticmethod
@@ -182,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
         user = {"id": re.sub(r"[^A-Za-z0-9 ._-]", "", str(b.get("user", "demo-user")))[:40] or "demo-user", "role": role}
         return prompt, mrn, user
 
-    def stream_agent(self, prompt: str, mrn: str, user: dict, use_ai: bool):
+    def stream_agent(self, prompt: str, mrn: str, user: dict, use_ai: bool, history: list | None = None):
         """Server-Sent Events: the UI sees each step (Scout, data load, plan, tools, drafts, checks) as it happens."""
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
@@ -195,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
 
         def work():
             try:
-                SVC.run_agent(prompt, mrn, user, use_ai, events.put)
+                SVC.run_agent(prompt, mrn, user, use_ai, events.put, history)
             except Exception as e:  # noqa: BLE001
                 traceback.print_exc()
                 events.put({"type": "result", "result": {"status": "error", "summary": _clean(f"{type(e).__name__}: {e}"),

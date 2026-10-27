@@ -13,7 +13,7 @@ interface Preset { label: string; sql: string; why: string; }
   <div class="page">
     <div class="page-head">
       <div>
-        <div class="eyebrow">Step 1 · Solving fragmented data</div>
+        <div class="eyebrow">Solving fragmented data</div>
         <h1>Three organisations, three database engines, one window</h1>
         <p>Each source runs on its own engine with its own read-only account. Zetaris federates them: ClinAssist sends one SQL dialect
           and never copies the data or connects to the databases directly.</p>
@@ -29,21 +29,21 @@ interface Preset { label: string; sql: string; why: string; }
             <div><h2>{{ label(sys) }}</h2><p>{{ counts()?.systems?.[sys]?.engine }} · port {{ counts()?.systems?.[sys]?.port }} · {{ counts()?.systems?.[sys]?.id_type }}</p></div>
             <ca-engine [system]="sys" />
           </div>
-          <table class="t">
-            <thead><tr><th>Table (as Zetaris sees it)</th><th class="num">Rows via Zetaris</th><th class="num">Source file</th><th></th></tr></thead>
+          <div class="tbl-wrap"><table class="t counts">
+            <thead><tr><th>Table in Zetaris</th><th class="num">Zetaris</th><th class="num">File</th><th></th></tr></thead>
             <tbody>
               @for (t of tablesOf(sys); track t.table) {
                 <tr><td class="mono">{{ t.zetaris_name }}</td><td class="num">{{ t.rows_zetaris ?? '—' }}</td><td class="num muted">{{ t.rows_csv ?? '—' }}</td>
                   <td>@if (t.match) { <span class="badge ok">match</span> } @else if (t.rows_zetaris !== null) { <span class="badge bad">diff</span> }</td></tr>
               } @empty { <tr><td colspan="4"><div class="skeleton"></div></td></tr> }
             </tbody>
-          </table>
+          </table></div>
         </div>
       }
     </div>
     @if (counts()?.zetaris_ok) {
-      <p class="small muted mt">All {{ counts()!.tables.length }} tables counted in one federated query in {{ counts()!.seconds }}s:
-        <span class="mono">{{ counts()!.sql }}</span></p>
+      <details class="mt sqlnote"><summary class="small muted">All {{ counts()!.tables.length }} tables counted in one federated query in {{ counts()!.seconds }}s · show the SQL</summary>
+        <pre class="code">{{ counts()!.sql }}</pre></details>
     }
 
     <div class="card mt">
@@ -96,6 +96,12 @@ interface Preset { label: string; sql: string; why: string; }
     </div>
   </div>`,
   styles: [`
+    .tbl-wrap { overflow-x: auto; }
+    .counts { width: 100%; table-layout: auto; }
+    .counts th { white-space: nowrap; }
+    .counts td.mono { word-break: break-all; }
+    .sqlnote pre { white-space: pre-wrap; word-break: break-word; }
+    .card-head { flex-wrap: wrap; gap: 10px; }
     .rec { border: 1px solid var(--line); border-radius: 10px; padding: 12px; background: var(--surface-2); }
     .rec.pending { border-color: #f8d7b0; background: #fffaf3; }
     details summary { cursor: pointer; }
@@ -116,24 +122,21 @@ export class SourcesPage implements OnInit {
   readonly presetWhy = signal<string>('');
   sql = '';
   readonly presets: Preset[] = [
-    { label: 'One query, three engines',
+    { label: 'One query combines 3 engines',
       why: 'Counts from SQL Server, MySQL and PostgreSQL in a single statement.',
       sql: `SELECT 'hospital patients (SQL Server)' AS item, COUNT(*) AS n FROM hospital_ehr.patients
 UNION ALL SELECT 'lab results (MySQL)', COUNT(*) FROM lab_lis.lab_results
 UNION ALL SELECT 'pharmacy prescriptions (PostgreSQL)', COUNT(*) FROM pharmacy_rx.prescriptions` },
-    { label: 'Naive exact matching',
-      why: 'Joining hospital and lab patients on exact surname + date of birth finds only 99 of 112: 13 patients would silently lose their lab results. ClinAssist’s matcher recovers them safely.',
+    { label: 'Exact matching across differently structured sources',
+      why: 'The hospital (SQL Server) and the lab (MySQL) store names and birth dates in different structures: given + family name vs SURNAME + forenames, ISO dates vs dd/MM/yyyy. Joining them on exact surname + date of birth finds only 99 of 112 lab patients: 13 would silently lose their lab results. ClinAssist’s matcher recovers them safely.',
       sql: `SELECT COUNT(*) AS exact_matches
 FROM hospital_ehr.patients AS hp
 INNER JOIN lab_lis.lab_patients AS lp
   ON upper(hp.family_name) = lp.surname
  AND date_format(hp.birth_date, 'dd/MM/yyyy') = lp.dob` },
-    { label: 'Kidney results from the lab',
-      why: 'eGFR results for one lab patient, read from MySQL through Zetaris.',
-      sql: `SELECT date_format(collected_at, 'yyyy-MM-dd') AS collected, value_num AS egfr, unit
-FROM lab_lis.lab_results
-WHERE lab_patient_id = 'LP4EC4D4E' AND loinc_code = '33914-3'
-ORDER BY collected_at DESC` },
+    { label: 'Lab results for a patient',
+      why: 'All lab results for the patient selected above, read from the lab system (MySQL) through Zetaris using the lab’s own patient ID.',
+      sql: '' },
     { label: 'Medicines per pharmacy patient',
       why: 'Prescription counts from PostgreSQL, joined to the pharmacy patient register.',
       sql: `SELECT pp.full_name AS patient, COUNT(*) AS prescriptions
@@ -169,7 +172,19 @@ LIMIT 10` },
     this.loading.set(false);
   }
 
-  usePreset(p: Preset): void { this.sql = p.sql; this.presetWhy.set(p.why); this.result.set(null); this.qErr.set(null); }
+  usePreset(p: Preset): void {
+    if (p.label === 'Lab results for a patient') {
+      const lab = this.sysView()?.records.find((r) => r.system === 'lab_lis' && r.status !== 'pending-review');
+      const id = lab?.record_id ?? 'LP4EC4D4E';
+      const who = this.sysView()?.label ?? 'a sample lab patient';
+      p = { ...p, why: lab ? `All lab results for ${who}, lab patient ${id}, read from MySQL through Zetaris.` : `The selected patient has no linked lab record, so a sample lab patient (${id}) is shown.`,
+        sql: `SELECT date_format(collected_at, 'yyyy-MM-dd') AS collected, test_name, value_num, unit, reference_range, status
+FROM lab_lis.lab_results
+WHERE lab_patient_id = '${id}'
+ORDER BY collected_at DESC
+LIMIT 200` };
+    }
+    this.sql = p.sql; this.presetWhy.set(p.why); this.result.set(null); this.qErr.set(null); }
 
   async run(): Promise<void> {
     this.running.set(true);

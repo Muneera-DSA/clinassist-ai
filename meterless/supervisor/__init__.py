@@ -35,6 +35,7 @@ ROLE_ACTIONS = {                              # supervised actions that are not 
     "admin.query": {"admin"},                 # read-only federated SQL console (synthetic data, demo)
     "identity.decision": {"records_staff", "clinician"},
     "batch.matching": {"records_staff", "admin"},
+    "feedback.record": {"clinician", "coordinator", "records_staff", "admin"},  # a person rates an answer
 }
 AI_ROLES = {"planner", "writer", "judge", "interpreter"}
 

@@ -138,17 +138,51 @@ class Scout:
         other = [m for m in details["mrns_mentioned"] if m != mrn.upper()]
         own_label = next((p["label"] for p in self.patients if p["mrn"] == mrn), "")
         own_words = set(re.findall(r"[A-Z][A-Za-z'-]+", own_label))
-        other_names = []
-        for p in self.patients:
-            if p["mrn"] == mrn:
-                continue
-            surname = p["label"].split(",")[0].strip().title()
-            if surname and surname not in own_words and re.search(r"\b" + re.escape(surname) + r"\b", prompt):
-                other_names.append(surname)
+        cands = self.find_patients(prompt, exclude=mrn)
+        details["other_patients"] = cands + [p for p in self.patients if p["mrn"] in other and p not in cands]
+        other_names = [c["matched"] for c in cands]
         if other or other_names or any(rx.search(prompt) for rx in self._other):
             flags.append("wrong-patient")
             matched += other + sorted(set(other_names))[:3]
         return flags, matched
+
+    def find_patients(self, prompt: str, exclude: str = "", loose: bool = False) -> list[dict]:
+        """Patients the request names, other than the selected one: by surname (any case), by first name when written as a
+        name (capitalised, possessive, or after 'for/of/about/patient'), allowing small typos ('kendrikks' -> Kendrick)."""
+        from difflib import SequenceMatcher
+        low = prompt.lower()
+        tokens = re.findall(r"[A-Za-z][A-Za-z'-]{2,}", prompt)
+        named = set()
+        for m in re.finditer(r"\b([A-Za-z][A-Za-z-]{2,})'s\b|\b(?:for|of|about|patient|named|called)\s+([A-Za-z][A-Za-z-]{2,})", prompt, re.I):
+            named.add((m.group(1) or m.group(2)).lower())
+        cap = {t.lower() for t in tokens if t[0].isupper()}
+        own = next((p["label"] for p in self.patients if p["mrn"] == exclude), "")
+        own_words = {w.lower() for w in re.findall(r"[A-Za-z][A-Za-z'-]+", own)}
+        out = []
+        for p in self.patients:
+            if p["mrn"] == exclude:
+                continue
+            fam, _, rest = p["label"].partition(",")
+            given = rest.strip().split(" (")[0].split()
+            names = [("surname", fam.strip().lower())] + [("given", g.lower()) for g in given[:1]]
+            hit = None
+            for kind, n in names:
+                if len(n) < 3 or n in own_words:
+                    continue
+                if re.search(r"\b" + re.escape(n) + r"(?:'s)?\b", low) and (kind == "surname" or loose or n in cap or n in named):
+                    hit = n
+                    break
+                for t in tokens:
+                    tl = t.lower().removesuffix("'s")
+                    if len(tl) >= 5 and len(n) >= 5 and tl[0] == n[0] and tl not in own_words and (kind == "surname" or loose or tl in cap or tl in named) \
+                            and SequenceMatcher(None, tl, n).ratio() >= 0.8:
+                        hit = n
+                        break
+                if hit:
+                    break
+            if hit:
+                out.append({"mrn": p["mrn"], "label": p["label"], "matched": hit.title(), "sure": not loose})
+        return out[:5]
 
     # 2b. AI interpretation (only for safe requests the rules could not place)
     def interpret_with_ai(self, prompt: str) -> dict:
@@ -177,6 +211,20 @@ class Scout:
             return {"intent": "unclear", "error": str(e)[:160], "lane": lane, "seconds": round(time.time() - t0, 1)}
 
     # 4 + 5. route and recommend
+    INTENT_LABEL = {"summary.previsit": "a pre-visit summary", "finding.explain": "an explanation of a finding",
+                    "medication.review": "a medicine review", "trend.review": "lab results and trends",
+                    "gaps.review": "missing or overdue tests", "identity.review": "the linked source records",
+                    "admin.details": "patient details, visits and lab visits"}
+    ROLE_NAME = {"clinician": "a clinician", "coordinator": "an insurance coordinator", "records_staff": "authorised hospital staff"}
+
+    def role_can(self, role: str) -> str:
+        """What this role may ask for, from the registry (so the message always matches the rules)."""
+        can = [self.INTENT_LABEL.get(k, k) for k, v in self.reg["intents"].items() if role in v["roles"]]
+        who = self.ROLE_NAME.get(role, role)
+        if not can:
+            return f"As {who} you cannot run patient requests here."
+        return f"As {who} you can ask for: " + (", ".join(can[:-1]) + " or " + can[-1] if len(can) > 1 else can[0]) + "."
+
     def decide(self, prompt: str, mrn: str, user: dict | None = None) -> Decision:
         t0 = time.perf_counter()
         user = user or {"id": "unknown", "role": "clinician"}
@@ -192,6 +240,15 @@ class Scout:
         telemetry = {"scores": scores, "interpreted": details, "registry_version": self.reg["version"]}
 
         flags, matched = self.guard(prompt, mrn, details)
+        if not flags and not intent["primary"]:
+            # The request is otherwise unclear: a lowercase or misspelt first name ("give me kendrikks data") may be the point.
+            loose = self.find_patients(prompt, exclude=mrn, loose=True)
+            if loose:
+                details["other_patients"] = loose
+                flags.append("wrong-patient")
+                matched += [c["matched"] for c in loose][:3]
+        if details.get("other_patients"):
+            telemetry["other_patients"] = details["other_patients"][:5]
         if not flags and not intent["primary"] and self.llm is not None:
             ai = self.interpret_with_ai(prompt)
             telemetry["nemotron"] = ai
@@ -209,11 +266,12 @@ class Scout:
         intent.setdefault("source", "rules")
         telemetry["seconds"] = round(time.perf_counter() - t0, 4)
         if flags:
-            return Decision("blocked", msgs[flags[0]], intent, {"level": "high", "flags": flags, "matched": matched},
+            msg = msgs[flags[0]] + (" " + self.role_can(role) if flags[0] == "role-not-permitted" else "")
+            return Decision("blocked", msg, intent, {"level": "high", "flags": flags, "matched": matched},
                             telemetry=telemetry)
         if not intent["primary"]:
-            return Decision("clarify", msgs["clarify"], intent, {"level": "none", "flags": [], "matched": []},
-                            telemetry=telemetry)
+            return Decision("clarify", f"{msgs['clarify'].split(' Choose one:')[0]} {self.role_can(role)}", intent,
+                            {"level": "none", "flags": [], "matched": []}, telemetry=telemetry)
 
         # The plan is the default order of single-action scripts (used when no AI is available); the contract also
         # lists every script the intent ALLOWS, from which Nemotron chooses what to run.
@@ -236,6 +294,14 @@ class Scout:
             for t in self.reg["intents"][k].get("allowed", []):
                 if t not in allowed:
                     allowed.append(t)
+        if top == "admin.details":
+            # Answer only what was asked: details, visits or lab visits (all three when the question is general).
+            low = prompt.lower()
+            want = {"get_patient_details": re.search(r"\b(details|demographic|birth|dob|age|sex|gender|registration|who is)\b", low),
+                    "list_lab_visits": re.search(r"\blab(oratory)? visits?\b|\bsamples?\b", low),
+                    "list_visits": re.search(r"\b(?<!lab )(?<!laboratory )(visits?|admissions?|admitted|appointments?|encounters?|stays?)\b", low)}
+            if any(want.values()):
+                plan = [st for st in plan if st["tool"] not in want or want[st["tool"]]]
         if len(details["analytes"]) == 1 and "list_lab_results" in allowed:
             plan.append({"tool": "list_lab_results", "args": {"analyte": details["analytes"][0]}})
         tools = list(dict.fromkeys([s["tool"] for s in plan] + allowed))

@@ -1,17 +1,18 @@
 import { Component, OnInit, computed, effect, inject, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { Api, IdentityLink, IdentityView, ProvenanceEvent, errorText } from '../core/api';
+import { NgTemplateOutlet } from '@angular/common';
+import { Api, IdentityLink, IdentityView, ProvenanceEvent, SystemsView, errorText } from '../core/api';
 import { AppState, SYSTEM_OF_LINK } from '../core/state';
-import { EngineBadge, PatientPicker } from '../ui/components';
+import { EngineBadge, PatientPicker, SearchSelect, SearchOption } from '../ui/components';
 
 @Component({
   selector: 'ca-identity',
-  imports: [FormsModule, EngineBadge, PatientPicker],
+  imports: [FormsModule, NgTemplateOutlet, EngineBadge, PatientPicker, SearchSelect],
   template: `
   <div class="page">
     <div class="page-head">
       <div>
-        <div class="eyebrow">Step 2 · Identity resolution</div>
+        <div class="eyebrow">Identity resolution</div>
         <h1>Which records belong to the same person, and who decided</h1>
         <p>The matcher scores surname, given name, date of birth and sex, and explains every point. It links automatically only when
           everything agrees exactly and no other patient comes close; anything less goes to a person. Every link and decision is
@@ -42,8 +43,13 @@ import { EngineBadge, PatientPicker } from '../ui/components';
             </div>
             @if (actionMsg()) { <div class="notice ok mb small">{{ actionMsg() }}</div> }
             @if (actionErr()) { <div class="notice bad mb small">{{ actionErr() }}</div> }
-            <div class="queue">
-              @for (l of shown(); track l.system + l.record_id) {
+            @if (shown().length) {
+              <label class="field mb">Record to review ({{ shown().length }})
+                <ca-search-select [options]="queueOptions()" [value]="selected() ? selected()!.system + ':' + selected()!.record_id : ''"
+                                  placeholder="Search by name, record ID or MRN" (changed)="selKey.set($event)" />
+              </label>
+            }
+            @if (selected(); as l) {
                 <div class="qi" [class.done]="l.reviewed">
                   <div class="spread">
                     <div class="row"><ca-engine [system]="sys(l.system)" /><span class="mono small">{{ l.record_id }}</span></div>
@@ -66,18 +72,57 @@ import { EngineBadge, PatientPicker } from '../ui/components';
                     <div class="row">
                       <button class="btn sm ok" (click)="decide(l, 'approve')" [disabled]="busy()">✓ Same person</button>
                       <button class="btn sm danger" (click)="decide(l, 'reject')" [disabled]="busy()">✕ Different people</button>
-                      <button class="btn sm ghost" (click)="state.selectPatient(l.mrn!)">Show provenance</button>
+                      <button class="btn sm ghost" (click)="state.selectPatient(l.mrn!)">Show this patient below</button>
                     </div>
                   }
                 </div>
-              } @empty { <p class="muted">Nothing waiting.</p> }
-            </div>
+            } @else { <p class="muted">Nothing waiting.</p> }
           </div>
         </div>
 
         <div class="card">
-          <div class="card-head"><div><h2>World Model provenance</h2><p>Every event about this patient and the records linked or proposed to them.</p></div><ca-patient-picker /></div>
+          <div class="card-head"><div><h2>World Model provenance</h2><p>Every event about this patient and the records linked or proposed to them.</p></div>
+            <div class="row"><ca-patient-picker /><button class="btn sm" (click)="provFull.set(true)" title="Open in a large window">⤢ Full screen</button></div></div>
           <div class="card-body">
+            <ng-container *ngTemplateOutlet="eventList" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card mt">
+        <div class="card-head"><div><h2>Matched records for this patient</h2>
+          <p>The same person's ID, name, date of birth and sex in each system, read live through Zetaris. Records waiting for a person are shown too, marked.</p></div>
+          <ca-patient-picker /></div>
+        <div class="card-body">
+          @if (matchErr()) { <div class="notice bad">{{ matchErr() }}</div> }
+          @else if (matched().length) {
+            <div class="tbl-wrap"><table class="t">
+              <thead><tr><th>System</th><th>ID in that system</th><th>Name as stored</th><th>Date of birth as stored</th><th>Sex</th><th>Link</th></tr></thead>
+              <tbody>
+                @for (m of matched(); track m.id) {
+                  <tr [class.pend]="m.status === 'pending-review'">
+                    <td><ca-engine [system]="m.system" /></td><td class="mono">{{ m.id }}</td><td>{{ m.name || '—' }}</td>
+                    <td class="mono">{{ m.dob || '—' }}</td><td>{{ m.sex || '—' }}</td>
+                    <td><span class="badge" [class.ok]="m.status === 'linked' || m.status === 'master'" [class.review]="m.status === 'pending-review'" [class.primary]="m.status === 'linked-by-reviewer'">{{ statusLabel(m.status) }}</span></td>
+                  </tr>
+                }
+              </tbody>
+            </table></div>
+          } @else { <div class="skeleton" style="height: 90px"></div> }
+        </div>
+      </div>
+
+      @if (provFull()) {
+        <div class="overlay" (click)="provFull.set(false)">
+          <div class="sheet card" (click)="$event.stopPropagation()">
+            <div class="card-head"><div><h2>World Model provenance</h2><p>{{ events().length }} events for the selected patient</p></div>
+              <div class="row"><ca-patient-picker /><button class="btn sm" (click)="provFull.set(false)">✕ Close</button></div></div>
+            <div class="card-body sheet-body"><ng-container *ngTemplateOutlet="eventList" /></div>
+          </div>
+        </div>
+      }
+
+      <ng-template #eventList>
             @if (provErr()) { <div class="notice bad">{{ provErr() }}</div> }
             <ol class="events">
               @for (e of events(); track e.seq) {
@@ -90,13 +135,17 @@ import { EngineBadge, PatientPicker } from '../ui/components';
                 </li>
               } @empty { <div class="skeleton" style="height: 120px"></div> }
             </ol>
-          </div>
-        </div>
-      </div>
+      </ng-template>
     } @else if (!error()) { <div class="skeleton" style="height: 300px"></div> }
   </div>`,
   styles: [`
-    .queue { display: flex; flex-direction: column; gap: 12px; max-height: 900px; overflow: auto; padding-right: 4px; }
+    .tbl-wrap { overflow-x: auto; }
+    tr.pend td { background: #fffaf3; }
+    .card-head { flex-wrap: wrap; gap: 10px; }
+    .overlay { position: fixed; inset: 0; background: rgba(15, 23, 42, .45); z-index: 50; display: grid; place-items: center; padding: 24px; }
+    .sheet { width: min(1200px, 96vw); height: 90vh; display: flex; flex-direction: column; overflow: hidden; }
+    .sheet-body { overflow: auto; flex: 1; }
+    .sheet-body .events { max-height: none; }
     .qi { border: 1px solid var(--line); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
     .qi.done { background: var(--surface-2); }
     .pair { display: grid; grid-template-columns: 1fr auto 1fr; gap: 10px; align-items: center; }
@@ -106,7 +155,7 @@ import { EngineBadge, PatientPicker } from '../ui/components';
     .scorebar .mark { position: absolute; top: -3px; bottom: -3px; width: 2px; }
     .review-mark { background: #98a2b3; } .auto-mark { background: var(--primary); }
     .reasons { margin: 0; padding-left: 18px; font-size: 12.5px; color: var(--muted); }
-    .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; max-height: 900px; overflow: auto; }
+    .events { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; max-height: 620px; overflow: auto; }
     .events li { border-left: 3px solid var(--primary-soft); padding: 2px 0 2px 12px; }
   `],
 })
@@ -122,6 +171,24 @@ export class IdentityPage implements OnInit {
   readonly events = signal<ProvenanceEvent[]>([]);
   readonly provErr = signal<string | null>(null);
   reviewer = 'Dr Demo Reviewer';
+  readonly provFull = signal(false);
+  readonly selKey = signal<string>('');
+  readonly selected = computed(() => {
+    const list = this.shown();
+    return list.find((l) => `${l.system}:${l.record_id}` === this.selKey()) ?? list[0] ?? null;
+  });
+  readonly queueOptions = computed<SearchOption[]>(() => this.shown().map((l) => ({
+    value: `${l.system}:${l.record_id}`,
+    label: `${l.reviewed ? '✓ ' : ''}${this.sysName(l.system)} ${l.record_id} · ${l.record_label} → ${l.hospital_label ?? ''} ${l.mrn ?? ''}`,
+    hint: `score ${l.score}` })));
+  readonly sysView = signal<SystemsView | null>(null);
+  readonly matchErr = signal<string | null>(null);
+  readonly matched = computed(() => (this.sysView()?.records ?? []).map((r) => {
+    const x = r.row;
+    if (r.system === 'hospital_ehr') return { system: r.system, id: r.record_id, name: `${x['family_name'] ?? ''}, ${x['given_name'] ?? ''}`, dob: x['birth_date'], sex: x['sex'], status: r.status };
+    if (r.system === 'lab_lis') return { system: r.system, id: r.record_id, name: `${x['surname'] ?? ''}, ${x['forenames'] ?? ''}`, dob: x['dob'], sex: x['gender'], status: r.status };
+    return { system: r.system, id: r.record_id, name: x['full_name'], dob: x['birth_date'], sex: x['sex'], status: r.status };
+  }));
 
   readonly reviewedCount = computed(() => (this.view()?.queue ?? []).filter((l) => l.reviewed).length);
   readonly shown = computed(() => (this.view()?.queue ?? []).filter((l) => this.filter() === 'all' || !l.reviewed));
@@ -140,6 +207,9 @@ export class IdentityPage implements OnInit {
       this.events.set([]);
       this.provErr.set(null);
       this.api.provenance(mrn).then((p) => this.events.set(p.events)).catch((e) => this.provErr.set(errorText(e)));
+      this.sysView.set(null);
+      this.matchErr.set(null);
+      this.api.systemsView(mrn).then((v) => this.sysView.set(v)).catch((e) => this.matchErr.set(errorText(e)));
     });
   }
 
@@ -158,6 +228,7 @@ export class IdentityPage implements OnInit {
       const r = await this.api.review({ system: l.system, record_id: l.record_id, action, by: this.reviewer.trim() });
       this.actionMsg.set(`${action === 'approve' ? 'Confirmed' : 'Rejected'}: ${l.record_id} ${action === 'approve' ? '→' : '≠'} ${l.mrn}. ` +
         `World Model rebuilt (${r.summary?.events ?? '?'} events, ${r.summary?.pending_review ?? '?'} still waiting).`);
+      this.selKey.set('');
       await this.load();
       if (l.mrn) { this.state.selectPatient(l.mrn); }
       await this.state.refreshPatients();
@@ -181,6 +252,10 @@ export class IdentityPage implements OnInit {
   }
 
   sys(s: string): string { return SYSTEM_OF_LINK[s] ?? s; }
+  sysName(s: string): string { return ({ laboratory: 'Lab', pharmacy: 'Pharmacy' } as Record<string, string>)[s] ?? s; }
+  statusLabel(s: string): string {
+    return ({ master: 'hospital master record', linked: 'linked automatically', 'linked-by-reviewer': 'confirmed by reviewer', 'pending-review': 'waiting for a person' } as Record<string, string>)[s] ?? s;
+  }
   pct(score: number | null): number { return Math.max(0, Math.min(100, ((score ?? 0) / 12.5) * 100)); }
   describe(e: ProvenanceEvent): string {
     if (e.kind === 'upsertEntity') return `Record registered (${e.type})`;

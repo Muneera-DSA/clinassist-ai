@@ -24,7 +24,7 @@ import requests
 
 from clinassist import scripts as S
 from clinassist.agent import Agent, ids_in
-from clinassist.analysis import analyse, load_rules
+from clinassist.analysis import analyse, ingredient, load_rules
 from clinassist.llm import LLMError, NightshiftLLM
 from clinassist.patient_record import TABLES, CsvSource, ZetarisSource, load_record
 from clinassist.sources import systems, zt
@@ -38,6 +38,10 @@ WORLD = DATA / "world"
 IDENTITY = DATA / "identity"
 EVAL = DATA / "eval"
 RUNS = DATA / "runs"
+FEEDBACK = DATA / "feedback.jsonl"
+# Words that carry no request on their own: "ok", "hmm", "thanks" get a clarifying question, not an answer.
+FILLER = {"okay", "hmm", "hmmm", "thanks", "thank", "you", "yes", "sure", "fine", "cool", "great", "alright", "right", "and",
+          "the", "then", "what", "about", "more", "please", "tell", "that", "this", "his", "her", "him", "its"}
 SYSTEM_TABLES = {
     "hospital_ehr": ["patients", "encounters", "conditions", "procedures", "observations", "allergies"],
     "lab_lis": ["lab_patients", "lab_results", "lab_reports"],
@@ -286,7 +290,7 @@ class Services:
         rz = RecordingZetaris(self.zetaris()) if self.mode == "zetaris" else None
         user = {"id": "ui", "role": "clinician"}
         sup = self.supervised("Show how each system stores this patient", mrn, user)
-        decision = Scout(self.registry, self.scout_patients).decide("Which records are linked to him?", mrn, user).to_dict()
+        decision = Scout(self.registry, self.scout_patients).decide("Show his linked source records and identity matches", mrn, user).to_dict()
         sup.decided(decision, self.scope_of(mrn, include_pending=True))
         for s, ids in wanted.items():
             table, key, cols = PATIENT_COLS[s]
@@ -509,7 +513,7 @@ class Services:
         out["meterless_run"] = sup.run_id
         return out
 
-    def run_agent(self, prompt: str, mrn: str, user: dict, use_ai: bool, emit) -> dict:
+    def run_agent(self, prompt: str, mrn: str, user: dict, use_ai: bool, emit, history: list[dict] | None = None) -> dict:
         """One request, fully supervised by Meterless: record -> Scout -> Nemotron as the boss -> enforced checks.
         Every step is sent to `emit` as it happens; the run is recorded in the World Model and saved to data/derived/runs."""
         events: list[dict] = []
@@ -530,7 +534,17 @@ class Services:
             return res
         run_id = sup.run_id
         send("start", run_id=run_id, prompt=prompt, mrn=mrn, user=user, ai=use_ai, mode=self.mode)
+        history = [h for h in (history or []) if isinstance(h, dict) and str(h.get("q", "")).strip()][-3:]
         decision = self.scout_decide(prompt, mrn, user, use_ai, sup=sup)
+        content = [w for w in re.findall(r"[a-z]{3,}", prompt.lower()) if w not in FILLER]
+        if decision["status"] == "clarify" and history and content:
+            # A short follow-up ("and his potassium?") may only make sense with the previous question: Scout tries once more
+            # with that context. Guards still apply in full; an unsafe follow-up is still blocked.
+            prev = str(history[-1]["q"])[:300]
+            retry = self.scout_decide(f"{prompt} (follow-up to the previous question: {prev})", mrn, user, use_ai, sup=sup)
+            if retry["status"] != "clarify":
+                retry["followup_of"] = prev
+                decision = retry
         sup.decided(decision, self.scope_of(mrn))
         send("scout", decision=decision)
         if decision["status"] != "approved":
@@ -545,10 +559,15 @@ class Services:
         if use_ai and not llm:
             send("stage", stage="ai-missing", message="Nightshift is not configured in .env: the contract's default plan and the verified rule-based writer are used")
         agent = Agent(llm, supervisor=sup, log=log, memory=self.memory if llm else None)
+        task = prompt
+        if history:  # earlier questions give context only; they are never evidence
+            task += "\n\nEarlier in this conversation (context only, not evidence): " + " | ".join(
+                f"{str(h['q'])[:200]} -> {h.get('status', '?')}" for h in history)
         try:
-            r = agent.run(prompt, ctx, contract=decision["contract"], require_contract=True)
+            r = agent.run(task, ctx, contract=decision["contract"], require_contract=True)
             res = {"status": r.status, "summary": r.summary, "verdict": _jsonable(r.verdict), "plan": r.plan, "rounds": r.rounds,
-                   "scripts": len(r.plan), "meterless_actions": len(sup.actions), "queries": rz.log if rz else []}
+                   "scripts": len(r.plan), "meterless_actions": len(sup.actions), "queries": rz.log if rz else [],
+                   "sources": self.cited_sources(ctx.gathered, r.summary)}
         except MeterlessUnavailable as e:
             res = {"status": "error", "summary": f"Stopped: {e}", "verdict": {}, "plan": [], "rounds": 0}
         try:
@@ -566,11 +585,164 @@ class Services:
         self._save_run(run_id, prompt, mrn, user, use_ai, events, res)
         return res
 
+    def source_info(self, key: str | None) -> dict | None:
+        """A rule's public source (title and link) from config/clinical_rules.json; url is None for internal rules."""
+        s = (self.rules.get("sources") or {}).get(key or "")
+        return {"key": key, "title": s.get("title"), "url": s.get("url")} if s else None
+
+    def cited_sources(self, gathered: dict, summary: str) -> list[dict]:
+        """Guideline sources behind the findings whose evidence ids the answer cites (all gathered findings if it cites none)."""
+        found: list[dict] = []
+
+        def walk(v):
+            if isinstance(v, dict):
+                if v.get("source") and isinstance(v.get("evidence"), list):
+                    found.append(v)
+                for x in v.values():
+                    walk(x)
+            elif isinstance(v, list):
+                for x in v:
+                    walk(x)
+        walk(gathered)
+        cited = [f for f in found if any(re.search(re.escape(e) + r"(?![\w-])", summary or "") for e in f["evidence"])] or found
+        out, seen = [], set()
+        for f in cited:
+            info = self.source_info(f["source"])
+            if info and info["key"] not in seen:
+                seen.add(info["key"])
+                out.append(info)
+        return out
+
     def _save_run(self, run_id, prompt, mrn, user, use_ai, events, res):
         RUNS.mkdir(parents=True, exist_ok=True)
         (RUNS / f"{run_id}.json").write_text(json.dumps(
             {"run_id": run_id, "at": now_iso(), "prompt": prompt, "mrn": mrn, "user": user, "ai": use_ai, "mode": self.mode,
              "status": res["status"], "events": events, "result": res}, default=str, indent=1), encoding="utf-8")
+
+    # ------------------------------------------------------------------ feedback: what ClinAssist learns from people
+    def feedback(self, run_id: str, rating: str, comment: str, user: dict) -> dict:
+        """A person rates an answer. Recorded as a supervised action in the Meterless World Model, saved as a lesson in
+        Meterless H-MEM (later answers to similar questions get it as guidance), and kept in data/derived/feedback.jsonl.
+        Lessons guide focus and style only: every answer is still fact-checked against the source records."""
+        _safe(run_id)
+        if rating not in ("up", "down"):
+            raise ValueError("rating must be 'up' or 'down'")
+        comment = re.sub(r"\s+", " ", comment or "").strip()[:500]
+        run = self.run(run_id)
+        intent = next((((e.get("decision") or {}).get("intent") or {}).get("primary")
+                       for e in run.get("events", []) if e.get("type") == "scout"), None) or "unknown"
+        if rating == "down":
+            lesson = (f"Clinician feedback (not helpful) on a '{intent}' answer to \"{run['prompt'][:160]}\""
+                      + (f": {comment.rstrip('.')}" if comment else "") + ". Adjust the answer accordingly next time.")
+        else:
+            lesson = (f"Clinician feedback (helpful) on a '{intent}' answer to \"{run['prompt'][:160]}\""
+                      + (f": {comment.rstrip('.')}" if comment else "") + ". Keep this approach.")
+        entry = {"at": now_iso(), "run_id": run_id, "rating": rating, "comment": comment, "intent": intent,
+                 "prompt": run["prompt"][:300], "status": run.get("status"), "by": user["id"], "role": user["role"],
+                 "lesson": lesson}
+        sup = self.supervised(f"Feedback on run {run_id}", run.get("mrn") or "-", user)
+
+        def record():
+            out = self.gateway.post("/hmem/lessons", {"run_id": run_id, "content": lesson, "confidence": 0.9 if rating == "down" else 0.8,
+                                                      "tags": [intent, "feedback", rating]})
+            FEEDBACK.parent.mkdir(parents=True, exist_ok=True)
+            with FEEDBACK.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({**entry, "lesson_id": out.get("id")}) + "\n")
+            return out
+
+        out = sup.act("feedback.record", run_id, {"rating": rating, "intent": intent, "comment_chars": len(comment)}, record,
+                      actor=f"person:{user['id']}", executor="meterless-hmem", summarize=lambda o: f"lesson {o.get('id')} saved")
+        sup.close("feedback-recorded")
+        return {"ok": True, "lesson": lesson, "lesson_id": out.get("id"), "meterless_run": sup.run_id}
+
+    # ------------------------------------------------------------------ medicine review (prescription history, safety flags, FDA labels)
+    MED_RULES = ("renal-", "rx-", "allergy-", "acei-potassium", "low-bp-on-treatment")
+
+    def drug_labels(self) -> dict:
+        """FDA label sections saved once by reference/fetch_drug_labels.py (offline afterwards). Empty if not fetched yet."""
+        f = ROOT / "reference" / "drug_labels.json"
+        mtime = f.stat().st_mtime if f.exists() else None
+        if getattr(self, "_labels_mtime", "x") != mtime:
+            self._labels = json.loads(f.read_text(encoding="utf-8")) if f.exists() else {}
+            self._labels_mtime = mtime
+        return self._labels
+
+    def prescriptions(self, mrn: str, fresh: bool = False) -> dict:
+        """Every medicine the patient was prescribed (full pharmacy history), our own safety flags on them, and the FDA
+        label reference for each. Data and flags come from the supervised patient load; the label lookup is recorded
+        by Meterless as its own action. Reference information, not advice."""
+        entry = self.load(mrn, fresh)
+        rec, result = entry["rec"], entry["result"]
+        admins: dict[str, list] = {}
+        for a in rec.of("administration"):
+            admins.setdefault(a.row["medication"], []).append(a)
+        by_med: dict[str, list] = {}
+        for i in rec.of("prescription"):
+            by_med.setdefault(i.row["medication"], []).append(i)
+        flags = [f for f in result["findings"] if f["rule"].startswith(self.MED_RULES)]
+        meds = []
+        for med, items in by_med.items():
+            items.sort(key=lambda i: i.when or datetime.min)
+            eids = {i.eid for i in items}
+            active = any(i.row.get("status") == "active" for i in items)
+            last = items[-1]
+            ad = sorted(admins.get(med, []), key=lambda a: a.when or datetime.min)
+            meds.append({
+                "medication": med, "ingredient": ingredient(med), "rxnorm_code": last.row.get("rxnorm_code"),
+                "status": "active" if active else "past",
+                "first_prescribed": items[0].when.date().isoformat() if items[0].when else None,
+                "last_prescribed": last.when.date().isoformat() if last.when else None,
+                "prescriptions": len(items),
+                "prescribers": sorted({i.row.get("prescriber") for i in items if i.row.get("prescriber")})[:4],
+                "dosage_text": next((i.row.get("dosage_text") for i in reversed(items) if i.row.get("dosage_text")), ""),
+                "recent": [{"date": i.when.date().isoformat() if i.when else None, "status": i.row.get("status"),
+                            "prescriber": i.row.get("prescriber"), "eid": i.eid} for i in reversed(items[-6:])],
+                "administrations": len(ad), "last_administered": ad[-1].when.date().isoformat() if ad and ad[-1].when else None,
+                "evidence": [i.eid for i in reversed(items[-3:])],
+                "flags": [{"rule": f["rule"], "level": f["severity"], "title": f["title"], "detail": f["detail"], "source": f.get("source"),
+                           "source_info": self.source_info(f.get("source")), "evidence": f["evidence"]}
+                          for f in flags if eids & set(f["evidence"])],
+            })
+        meds.sort(key=lambda m: (m["status"] != "active", -(len(m["flags"])), m["medication"].lower()))
+        ref = self.drug_labels()
+        user = {"id": "ui", "role": "clinician"}
+        sup = self.supervised("Open the medicine review", mrn, user)
+        decision = Scout(self.registry, self.scout_patients).decide("Review his medications for safety issues", mrn, user).to_dict()
+        sup.decided(decision, self.scope_of(mrn))
+
+        def attach():
+            found = 0
+            for m in meds:
+                lab = (ref.get("labels") or {}).get(str(m["rxnorm_code"]))
+                m["label"] = lab
+                found += bool(lab)
+            return found
+
+        found = sup.act("view", "FDA drug label reference", {"medicines": len(meds)}, attach, actor="ui", executor="python",
+                        summarize=lambda n: f"{n} of {len(meds)} medicines have a saved FDA label")
+        sup.close("ok")
+        return {"mrn": mrn, "patient": rec.label, "as_of": self.as_of.isoformat(), "medications": meds,
+                "counts": {"medicines": len(meds), "active": sum(m["status"] == "active" for m in meds),
+                           "flagged": sum(bool(m["flags"]) for m in meds), "with_label": found},
+                "labels": {"available": bool(ref), "fetched_at": ref.get("fetched_at"), "source": ref.get("source"), "note": ref.get("_note")},
+                "allergies": result.get("allergies", []), "meterless_run": sup.run_id, "data_run": entry.get("meterless_run")}
+
+    def scripts(self) -> dict:
+        """The catalog Nemotron chooses from: name, what it does, what it returns (no data involved)."""
+        S.load_all()
+        return {"scripts": [{k: c.get(k) for k in ("name", "does", "returns", "kind", "args")} for c in S.catalog()]}
+
+    def feedback_list(self, limit: int = 50) -> dict:
+        items = []
+        if FEEDBACK.exists():
+            for line in FEEDBACK.read_text(encoding="utf-8").splitlines():
+                try:
+                    items.append(json.loads(line))
+                except ValueError:
+                    continue
+        items.reverse()
+        return {"count": len(items), "up": sum(i.get("rating") == "up" for i in items),
+                "down": sum(i.get("rating") == "down" for i in items), "items": items[:limit]}
 
     def runs(self) -> list[dict]:
         out = []

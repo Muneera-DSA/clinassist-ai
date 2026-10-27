@@ -1,17 +1,17 @@
 import { Component, OnInit, computed, inject, signal } from '@angular/core';
 import { Api, errorText } from '../core/api';
-import { CitedText } from '../ui/components';
+import { CitedText, SearchSelect, SearchOption } from '../ui/components';
 
 interface Row { seq: number; kind: string; entity: string; what: string; value: string; by: string; at: string; denied: boolean; }
 
 @Component({
   selector: 'ca-audit',
-  imports: [CitedText],
+  imports: [CitedText, SearchSelect],
   template: `
   <div class="page">
     <div class="page-head">
       <div>
-        <div class="eyebrow">Step 6 · Audit trail — the Meterless World Model</div>
+        <div class="eyebrow">Audit trail — the Meterless World Model</div>
         <h1>Every request and every action, recorded by Meterless</h1>
         <p>Each run is an event-sourced record in the Meterless World Model: who asked, Scout's decision and contract, and for every
           action (script, Zetaris fetch, Nemotron call, memory lookup) the request, Meterless's approval or refusal, and the result,
@@ -22,11 +22,18 @@ interface Row { seq: number; kind: string; entity: string; what: string; value: 
     @if (error()) { <div class="notice bad mb">{{ error() }}</div> }
     <div class="layout">
       <div class="card">
-        <div class="card-head"><h2>Runs</h2><span class="badge neutral">{{ runs().length }}</span></div>
+        <div class="card-head"><h2>Runs</h2><span class="badge neutral">{{ shownRuns().length }} / {{ runs().length }}</span></div>
+        <div class="card-body find">
+          <ca-search-select [options]="runOptions()" [value]="sel()" placeholder="Search runs: question, patient, user, status…" (changed)="open($event)" />
+          <input class="input sm" [value]="filter()" (input)="filter.set($any($event.target).value)" placeholder="…or filter the list below" />
+        </div>
         <div class="runs">
-          @for (r of runs(); track r) {
-            <button class="run" [class.sel]="sel() === r" (click)="open(r)"><span class="mono">{{ r }}</span></button>
-          } @empty { <p class="muted small card-body">No runs yet.</p> }
+          @for (r of shownRuns(); track r) {
+            <button class="run" [class.sel]="sel() === r" (click)="open(r)">
+              <span class="mono small">{{ r }}</span>
+              @if (info()[r]; as i) { <span class="rq">{{ i.prompt }}</span><span class="rm">{{ i.user?.role }} · {{ i.mrn }} · {{ i.status }}</span> }
+            </button>
+          } @empty { <p class="muted small card-body">No matching runs.</p> }
         </div>
       </div>
       <div class="stack">
@@ -43,16 +50,23 @@ interface Row { seq: number; kind: string; entity: string; what: string; value: 
         @if (summary()) { <div class="card card-pad"><ca-cited-text [text]="summary()" [mrn]="header()?.patient || ''" /></div> }
         @if (rows().length) {
           <div class="card">
-            <div class="card-head"><div><h2>World Model events</h2><p>In order. "by" is the provenance recorded with each event.</p></div></div>
+            <div class="card-head"><div><h2>World Model events</h2><p>In order. "by" is the provenance recorded with each event. Click a row for the full event (deep log).</p></div>
+              <button class="btn sm" (click)="allOpen.set(!allOpen())">{{ allOpen() ? 'Collapse all' : 'Expand all' }}</button></div>
             <div class="scroll" style="max-height: 640px">
               <table class="t">
                 <thead><tr><th>#</th><th>Event</th><th>About</th><th>What</th><th>Value</th><th>By</th></tr></thead>
                 <tbody>
-                  @for (r of rows(); track r.seq) {
-                    <tr [class.deny]="r.denied">
-                      <td class="mono small">{{ r.seq }}</td><td class="small">{{ r.kind }}</td><td class="mono small">{{ r.entity }}</td>
+                  @for (r of rows(); track r.seq; let k = $index) {
+                    <tr [class.deny]="r.denied" class="ev" (click)="toggle(r.seq)">
+                      <td class="mono small">{{ open_(r.seq) ? '▾' : '▸' }} {{ r.seq }}</td><td class="small">{{ r.kind }}</td><td class="mono small">{{ r.entity }}</td>
                       <td class="small">{{ r.what }}</td><td class="mono small val">{{ r.value }}</td><td class="small">{{ r.by }}</td>
                     </tr>
+                    @if (open_(r.seq)) {
+                      <tr class="deep"><td colspan="6">
+                        <div class="small muted">Recorded {{ events()[k]?.at }} · event #{{ r.seq }} · {{ r.kind }}</div>
+                        <pre class="code">{{ pretty(events()[k]) }}</pre>
+                      </td></tr>
+                    }
                   }
                 </tbody>
               </table>
@@ -68,7 +82,14 @@ interface Row { seq: number; kind: string; entity: string; what: string; value: 
             .run { text-align: left; border: 0; border-bottom: 1px solid var(--line); background: #fff; padding: 8px 14px; cursor: pointer; font-size: 12px; }
             .run:hover { background: var(--surface-2); } .run.sel { background: var(--primary-soft); }
             .val { max-width: 420px; word-break: break-word; }
-            tr.deny td { background: var(--high-soft); }`],
+            tr.deny td { background: var(--high-soft); }
+            .find { display: flex; flex-direction: column; gap: 6px; border-bottom: 1px solid var(--line); }
+            .run { display: flex; flex-direction: column; gap: 2px; }
+            .rq { font-size: 12.5px; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+            .rm { font-size: 11px; color: var(--faint); }
+            tr.ev { cursor: pointer; } tr.ev:hover td { background: var(--surface-2); }
+            tr.deep td { background: #f8fafc; }
+            tr.deep pre.code { white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; font-size: 11.5px; margin: 6px 0 0; }`],
 })
 export class AuditPage implements OnInit {
   private api = inject(Api);
@@ -77,6 +98,23 @@ export class AuditPage implements OnInit {
   readonly events = signal<any[]>([]);
   readonly summary = signal<string>('');
   readonly error = signal<string | null>(null);
+  readonly info = signal<Record<string, any>>({});
+  readonly filter = signal('');
+  readonly expanded = signal<Set<number>>(new Set());
+  readonly allOpen = signal(false);
+  readonly runOptions = computed<SearchOption[]>(() => this.runs().map((r) => {
+    const i = this.info()[r];
+    return { value: r, label: i ? i.prompt : r, hint: i ? `${i.user?.role ?? ''} · ${i.mrn} · ${i.status}` : 'page view or job' };
+  }));
+  readonly shownRuns = computed(() => {
+    const w = this.filter().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.runs().filter((r) => { const i = this.info()[r];
+      const t = `${r} ${i?.prompt ?? ''} ${i?.mrn ?? ''} ${i?.user?.id ?? ''} ${i?.user?.role ?? ''} ${i?.status ?? ''}`.toLowerCase();
+      return w.every((x) => t.includes(x)); });
+  });
+  toggle(seq: number): void { const s = new Set(this.expanded()); s.has(seq) ? s.delete(seq) : s.add(seq); this.expanded.set(s); }
+  open_(seq: number): boolean { return this.allOpen() || this.expanded().has(seq); }
+  pretty(e: unknown): string { return JSON.stringify(e, null, 2); }
 
   readonly rows = computed<Row[]>(() => this.events().map((e) => {
     const p = e.payload ?? {};
@@ -101,6 +139,7 @@ export class AuditPage implements OnInit {
     try {
       const r = await this.api.meterlessRuns();
       this.runs.set(r.runs);
+      this.api.runs().then((list) => this.info.set(Object.fromEntries((list as any[]).map((x) => [x.run_id, x])))).catch(() => undefined);
       this.error.set(null);
       if (r.runs.length && !this.sel()) { this.open(r.runs[0]); }
     } catch (e) { this.error.set(errorText(e)); }
@@ -108,6 +147,7 @@ export class AuditPage implements OnInit {
 
   async open(id: string): Promise<void> {
     this.sel.set(id);
+    this.expanded.set(new Set());
     this.events.set([]);
     this.summary.set('');
     try {

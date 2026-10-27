@@ -100,6 +100,8 @@ def fact_text(rec: PatientRecord, result: dict) -> dict[str, str]:
     for e in result["timeline"]:
         for x in e["evidence"]:
             facts[x] = facts.get(x, "") + f" {e['date']} {e['text']}"
+    for e, txt in (result.get("script_facts") or {}).items():
+        facts[e] = facts.get(e, "") + txt
     return facts
 
 

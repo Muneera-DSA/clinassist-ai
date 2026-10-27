@@ -248,6 +248,42 @@ def main() -> None:
     check("a draft with no evidence IDs (a plan, not an answer) is corrected at once, without using a fact-check round",
           any(t["action"] == "not-an-answer" for t in r.trace) and r.status == "verified-ai" and r.rounds == 1, f"{r.status} rounds={r.rounds}")
 
+    meds_q = scout.decide("Is he on metformin?", MRN, dr)
+
+    class AsksForMetformin(StandInLLM):
+        def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
+            if "lead clinical reviewer" in system:
+                self.lanes.append("boss")
+                return Reply('{"calls": [{"script": "fetch_record"}, {"script": "find_medication", "args": {"name": "metformin"}}], "done": true}', "s", 0.0)
+            self.lanes.append("other")
+            return super().chat(system, user, deep, max_tokens, temperature, model)
+
+    llm = AsksForMetformin()
+    r, _, _ = run("Is he on metformin?", llm, meds_q.contract)
+    check("nothing recorded for what was asked: a plain 'not in the records' answer, no writer and no fact-check",
+          meds_q.status == "approved" and r.status == "no-data" and "No prescription for metformin" in r.summary
+          and "other" not in llm.lanes, f"{meds_q.status} {r.status} {r.summary[:80]}")
+
+    young = next(p["mrn"] for p in json.loads((DATA / "world" / "patient_identity.json").read_text(encoding="utf-8"))["patients"]
+                 if p["label"].startswith("STROMAN"))
+    medrev = scout.decide("Review his medications for safety issues", young, dr)
+    r, _, _ = run("Review his medications for safety issues", None, medrev.contract, mrn=young)
+    check("a medicine review for a patient with no eGFR answers about the medicines, not 'no eGFR results'",
+          r.status.startswith("verified") and "Medicine safety review" in r.summary and "EGFR" not in r.summary.upper(),
+          f"{r.status} {r.summary[:90]}")
+
+    class AsksForKidneyOnly(StandInLLM):
+        def chat(self, system, user, deep=False, max_tokens=1500, temperature=0.2, model=None):
+            if "lead clinical reviewer" in system:
+                return Reply('{"calls": [{"script": "fetch_record"}, {"script": "compute_trend", "args": {"analyte": "egfr"}}, '
+                             '{"script": "compute_trend", "args": {"analyte": "creatinine"}}], "done": true}', "s", 0.0)
+            return super().chat(system, user, deep, max_tokens, temperature, model)
+
+    labs_q = scout.decide("What blood tests has this patient had?", young, dr)
+    r, _, _ = run("What blood tests has this patient had?", AsksForKidneyOnly(), labs_q.contract, mrn=young)
+    check("the boss asks only for eGFR and creatinine (none recorded): the other lab results are still found and reported",
+          r.status != "no-data" and "Hemoglobin" in r.summary, f"{r.status} {r.summary[:90]}")
+
     thinking = "The user wants a summary. I need to cite.\nFirst, list findings.\n1. eGFR fell.\n\n- eGFR fell. [E-a]\n- BP low. [E-b]"
     check("thinking-aloud before the answer is removed", final_answer(thinking) == "# Pre-visit summary\n- eGFR fell. [E-a]\n- BP low. [E-b]")
 

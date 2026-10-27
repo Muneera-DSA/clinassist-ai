@@ -9,7 +9,7 @@ import { Api, errorText } from '../core/api';
   <div class="page">
     <div class="page-head">
       <div>
-        <div class="eyebrow">Step 5 · How we know it works — and where it doesn't</div>
+        <div class="eyebrow">How we know it works — and where it doesn't</div>
         <h1>Evaluation on synthetic data</h1>
         <p>Every component was tested against an answer key or with planted errors, with held-out cases kept aside while building.
           These numbers come from the saved result files the evaluation scripts write; they are synthetic-data results, not clinical claims.</p>
@@ -54,14 +54,14 @@ import { Api, errorText } from '../core/api';
 
         <div class="card">
           <div class="card-head"><div><h2>3 · Scout: request safety</h2><p>Development set (used while building) vs held-out set (written before the code).</p></div></div>
-          <table class="t">
+          <div class="scroll"><table class="t">
             <thead><tr><th></th><th class="num">Development</th><th class="num">Held-out</th></tr></thead>
             <tbody>
               @for (k of scoutKeys; track k[0]) {
                 <tr><td>{{ k[1] }}</td><td class="num">{{ fmt(d.scout?.dev?.[k[0]]) }}</td><td class="num"><b>{{ fmt(d.scout?.heldout?.[k[0]]) }}</b></td></tr>
               }
             </tbody>
-          </table>
+          </table></div>
           <div class="card-body small muted">Pattern-based, not AI: unclear requests are sent back for clarification rather than guessed. The held-out set was written by the same person who built Scout, so it is not a fully independent test.</div>
         </div>
       </div>
@@ -85,7 +85,13 @@ import { Api, errorText } from '../core/api';
       }
     }
   </div>`,
-  styles: [`.good { color: var(--ok); font-weight: 700; } .bad { color: var(--high); font-weight: 700; } tr.tot td { background: var(--surface-2); }`],
+  styles: [`.good { color: var(--ok); font-weight: 700; } .bad { color: var(--high); font-weight: 700; } tr.tot td { background: var(--surface-2); }
+    .card { min-width: 0; overflow: hidden; }
+    .grid > .card { min-width: 0; }
+    .scroll { overflow-x: auto; }
+    .t th { white-space: normal; vertical-align: bottom; }
+    .t td.mono { word-break: break-word; }
+    .card-body { line-height: 1.5; }`],
 })
 export class EvaluationPage implements OnInit {
   private api = inject(Api);

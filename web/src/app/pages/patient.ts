@@ -12,7 +12,7 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
   <div class="page">
     <div class="page-head">
       <div>
-        <div class="eyebrow">Step 3 · Longitudinal analysis</div>
+        <div class="eyebrow">Longitudinal analysis</div>
         <h1>Three years of one patient's history, evidence on every line</h1>
         <p>Only identity links that were automatic or confirmed by a person are used. Nothing dated after the review date is read.
           Every flag cites the exact source records; click any chip to open the row.</p>
@@ -70,7 +70,9 @@ import { EngineBadge, EvidenceChips, PatientPicker, TrendChart } from '../ui/com
                   <div class="row"><span class="badge" [class]="'badge ' + f.severity">{{ f.severity === 'high' ? 'HIGH' : f.severity }}</span><b>{{ f.title }}</b></div>
                   <div class="small">{{ f.detail }}</div>
                   <div class="row small">
-                    @if (srcTitle(r, f.source); as src) { <span class="faint">Source: {{ src }}</span> } @else { <span class="faint">Internal rule</span> }
+                    @if (srcTitle(r, f.source); as src) {
+                      <span class="faint">Source: @if (srcUrl(r, f.source); as u) { <a [href]="u" target="_blank" rel="noopener">{{ src }} ↗</a> } @else { {{ src }} (internal rule) }</span>
+                    } @else { <span class="faint">Internal rule</span> }
                   </div>
                   <div><ca-evidence [ids]="f.evidence" [mrn]="r.patient.mrn" [max]="5" /></div>
                 </div>
@@ -179,4 +181,5 @@ export class PatientPage {
   sev(s: string): number { return (this.p()?.findings ?? []).filter((f) => f.severity === s).length; }
   sys(s: string): string { return SYSTEM_OF_LINK[s] ?? s; }
   srcTitle(r: PatientReview, key: string | null): string | null { return key ? (r.sources[key]?.title ?? null) : null; }
+  srcUrl(r: PatientReview, key: string | null): string | null { return key ? (r.sources[key]?.url ?? null) : null; }
 }

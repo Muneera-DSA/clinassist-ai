@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, ElementRef, computed, effect, inject, input, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { Api, EvidenceItem, errorText } from '../core/api';
 import { AppState, ENGINE_CLASS, ENGINE_SHORT, SYSTEM_LABEL } from '../core/state';
@@ -31,24 +31,95 @@ export class EvidenceChips {
   short(e: string): string { return e.replace(/^E-/, '').replace(/-(.{6}).*$/, '-$1…'); }
 }
 
-/** Patient selector used on every page, so the whole demo follows one person. */
+export interface SearchOption { value: string; label: string; hint?: string; }
+
+/** Dropdown with type-to-search: every word typed must appear in the option (any order, any case).
+ *  Arrow keys move, Enter picks, Esc closes. Used for every dropdown in ClinAssist. */
+@Component({
+  selector: 'ca-search-select',
+  template: `
+    <div class="ss" (focusout)="blur($event)">
+      <input #box class="input ss-input" role="combobox" [attr.aria-expanded]="open()" autocomplete="off" spellcheck="false"
+             [placeholder]="open() ? 'Type to search…' : placeholder()" [value]="open() ? query() : current()?.label ?? ''"
+             (focus)="show()" (click)="show()" (input)="type($any($event.target).value)" (keydown)="key($event)" />
+      <span class="ss-caret" aria-hidden="true">▾</span>
+      @if (open()) {
+        <ul class="ss-list" role="listbox">
+          @for (o of filtered(); track o.value; let i = $index) {
+            <li role="option" [class.active]="i === active()" [class.sel]="o.value === value()" [attr.aria-selected]="o.value === value()"
+                (mousedown)="$event.preventDefault(); pick(o)" (mouseenter)="active.set(i)">
+              <span class="ss-l">{{ o.label }}</span>@if (o.hint) { <span class="ss-h">{{ o.hint }}</span> }
+            </li>
+          } @empty { <li class="ss-empty">No match for “{{ query() }}”</li> }
+          @if (more() > 0) { <li class="ss-empty">{{ more() }} more: keep typing to narrow</li> }
+        </ul>
+      }
+    </div>`,
+  styles: [`
+    .ss { position: relative; }
+    .ss-input { padding-right: 28px; text-overflow: ellipsis; }
+    .ss-caret { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); color: var(--faint); pointer-events: none; font-size: 12px; }
+    .ss-list { position: absolute; left: 0; right: 0; top: calc(100% + 4px); z-index: 60; margin: 0; padding: 4px; list-style: none; background: #fff;
+      border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: 0 14px 30px -12px rgba(16,24,40,.35); max-height: 300px; overflow: auto; }
+    .ss-list li { padding: 7px 10px; border-radius: 7px; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--text); font-weight: 500; }
+    .ss-list li.active { background: var(--primary-soft, #e6f4f1); }
+    .ss-list li.sel .ss-l { font-weight: 700; }
+    .ss-h { color: var(--faint); font-size: 11.5px; white-space: nowrap; }
+    .ss-list li.ss-empty { color: var(--muted); cursor: default; font-style: italic; }
+  `],
+})
+export class SearchSelect {
+  readonly options = input<SearchOption[]>([]);
+  readonly value = input<string>('');
+  readonly placeholder = input<string>('Select…');
+  readonly changed = output<string>();
+  private box = viewChild<ElementRef<HTMLInputElement>>('box');
+  readonly open = signal(false);
+  readonly query = signal('');
+  readonly active = signal(0);
+  readonly current = computed(() => this.options().find((o) => o.value === this.value()) ?? null);
+  private readonly matches = computed(() => {
+    const words = this.query().toLowerCase().split(/\s+/).filter(Boolean);
+    return this.options().filter((o) => { const t = `${o.label} ${o.hint ?? ''} ${o.value}`.toLowerCase(); return words.every((w) => t.includes(w)); });
+  });
+  readonly filtered = computed(() => this.matches().slice(0, 60));
+  readonly more = computed(() => this.matches().length - this.filtered().length);
+
+  show(): void {
+    if (this.open()) return;
+    this.query.set('');
+    this.open.set(true);
+    this.active.set(Math.max(0, this.filtered().findIndex((o) => o.value === this.value())));
+  }
+  type(v: string): void { this.query.set(v); this.open.set(true); this.active.set(0); }
+  pick(o: SearchOption): void { this.open.set(false); this.query.set(''); if (o.value !== this.value()) this.changed.emit(o.value); this.box()?.nativeElement.blur(); }
+  blur(e: FocusEvent): void { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node)) { this.open.set(false); this.query.set(''); } }
+  key(e: KeyboardEvent): void {
+    const n = this.filtered().length;
+    if (e.key === 'ArrowDown') { e.preventDefault(); this.show(); this.active.set(Math.min(n - 1, this.active() + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); this.active.set(Math.max(0, this.active() - 1)); }
+    else if (e.key === 'Enter') { e.preventDefault(); const o = this.filtered()[this.active()]; if (o && this.open()) this.pick(o); }
+    else if (e.key === 'Escape') { this.open.set(false); this.query.set(''); }
+  }
+}
+
+/** Patient selector used on every page, so the whole demo follows one person. Type a name, MRN or date of birth to search. */
 @Component({
   selector: 'ca-patient-picker',
-  imports: [FormsModule],
+  imports: [SearchSelect],
   template: `
     <label class="field" style="min-width: 300px">
       Patient
-      <select class="input" [ngModel]="state.mrn()" (ngModelChange)="state.selectPatient($event)">
-        @for (p of sorted(); track p.mrn) {
-          <option [value]="p.mrn">{{ p.label }} · {{ p.mrn }}{{ p.pending ? ' · ' + p.pending + ' pending' : '' }}</option>
-        }
-      </select>
+      <ca-search-select [options]="options()" [value]="state.mrn()" placeholder="Search by name, MRN or date of birth"
+                        (changed)="state.selectPatient($event)" />
     </label>`,
 })
 export class PatientPicker {
   readonly state = inject(AppState);
   readonly sorted = computed(() => [...this.state.patients()].sort((a, b) =>
     (a.mrn === 'MRN91862E3E' ? -1 : 0) - (b.mrn === 'MRN91862E3E' ? -1 : 0) || a.label.localeCompare(b.label)));
+  readonly options = computed<SearchOption[]>(() => this.sorted().map((p) => ({
+    value: p.mrn, label: `${p.label} · ${p.mrn}`, hint: p.pending ? `${p.pending} pending` : undefined })));
 }
 
 /** Small line chart of a lab series with the guideline band shaded (no chart library needed). */

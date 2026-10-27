@@ -1,6 +1,6 @@
 {
   "_note": "ClinAssist implementation of the Meterless Scout Intent spec (sense, interpret, guard, route, recommend). Patterns are case-insensitive regular expressions with weights. Synthetic-data demonstration; every approved request still ends with a clinician's review.",
-  "version": "2026-10-26.3",
+  "version": "2026-10-27.7",
   "lanes": {
     "planner": "nvidia/nemotron-3.5-lightning-30b-a3b",
     "writer": "nvidia/nemotron-3.5-lightning-30b-a3b",
@@ -79,6 +79,14 @@
           "args": {}
         },
         {
+          "tool": "check_risky_combinations",
+          "args": {}
+        },
+        {
+          "tool": "check_older_adult_medicines",
+          "args": {}
+        },
+        {
           "tool": "check_low_bp_on_treatment",
           "args": {}
         },
@@ -151,12 +159,19 @@
         "build_timeline",
         "list_emergency_visits",
         "get_identity_links",
-        "rank_findings"
+        "rank_findings",
+        "find_medication",
+        "check_risky_combinations",
+        "check_older_adult_medicines"
       ]
     },
     "finding.explain": {
       "description": "Explain why a finding or alert was raised, with its evidence",
       "patterns": [
+        [
+          "\\b(what|which)\\b.{0,30}\\b(flag(s|ged)?|abnormal|out of range)\\b",
+          3
+        ],
         [
           "\\bexplain\\w*\\b",
           3
@@ -246,7 +261,10 @@
         "build_timeline",
         "list_emergency_visits",
         "get_identity_links",
-        "rank_findings"
+        "rank_findings",
+        "find_medication",
+        "check_risky_combinations",
+        "check_older_adult_medicines"
       ]
     },
     "medication.review": {
@@ -275,6 +293,22 @@
         [
           "\\b(statins?|metformin|lisinopril|alendron\\w*|insulin|amlodipine)\\b",
           1
+        ],
+        [
+          "\\b(is|was|has) (he|she|the patient) (ever )?(been )?(on|taking|taken|prescribed|given)\\b",
+          3
+        ],
+        [
+          "\\bever (been )?(on|prescribed|given|taken)\\b",
+          3
+        ],
+        [
+          "\\bprescri(bed|ption) (for|of)\\b",
+          3
+        ],
+        [
+          "\\b(interact\\w*|combinations?|risky|polypharmacy|beers)\\b",
+          2
         ]
       ],
       "tools": [
@@ -302,6 +336,14 @@
         },
         {
           "tool": "check_allergy_conflicts",
+          "args": {}
+        },
+        {
+          "tool": "check_risky_combinations",
+          "args": {}
+        },
+        {
+          "tool": "check_older_adult_medicines",
           "args": {}
         },
         {
@@ -341,12 +383,19 @@
         "list_lab_results",
         "kidney_stage_history",
         "list_problems",
-        "rank_findings"
+        "rank_findings",
+        "find_medication",
+        "check_risky_combinations",
+        "check_older_adult_medicines"
       ]
     },
     "trend.review": {
       "description": "How one or more lab values or vital signs changed over time",
       "patterns": [
+        [
+          "\\b(blood (tests?|work|results?)|bloods|lab(oratory)? (tests?|results?|work)|labs)\\b",
+          3
+        ],
         [
           "\\btrends?\\b",
           3
@@ -371,6 +420,10 @@
       "tools": [
         {
           "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "list_lab_results",
           "args": {}
         },
         {
@@ -477,6 +530,10 @@
           3
         ],
         [
+          "\\brecords? (are |is |were )?(linked|matched)\\b",
+          3
+        ],
+        [
           "\\bpending\\b",
           1.5
         ],
@@ -501,6 +558,59 @@
         "records_staff"
       ],
       "allowed": [
+        "get_identity_links",
+        "fetch_record",
+        "get_patient_details"
+      ]
+    },
+    "admin.details": {
+      "description": "Registration details, hospital visits and admissions, and lab visit dates for the patient: administrative information only, no clinical results",
+      "patterns": [
+        [
+          "\\b(details|demographics?|date of birth|dob|birthday|age|sex|gender|registration|registered)\\b",
+          3
+        ],
+        [
+          "\\b(visits?|admissions?|admitted|appointments?|encounters?|attendances?|hospital stays?)\\b",
+          3
+        ],
+        [
+          "\\blab(oratory)? visits?\\b",
+          2
+        ],
+        [
+          "\\bwho is (this|the) patient\\b",
+          3
+        ]
+      ],
+      "tools": [
+        {
+          "tool": "fetch_record",
+          "args": {}
+        },
+        {
+          "tool": "get_patient_details",
+          "args": {}
+        },
+        {
+          "tool": "list_visits",
+          "args": {}
+        },
+        {
+          "tool": "list_lab_visits",
+          "args": {}
+        }
+      ],
+      "roles": [
+        "clinician",
+        "coordinator",
+        "records_staff"
+      ],
+      "allowed": [
+        "fetch_record",
+        "get_patient_details",
+        "list_visits",
+        "list_lab_visits",
         "get_identity_links"
       ]
     }
@@ -580,7 +690,13 @@
       "\\bshould (i|we|he|she|they)\\b.{0,25}\\b(start|stop|increase|decrease|reduce|switch|change|give|continue|discontinue|add|use)\\b",
       "\\brecommend\\w*\\b.{0,20}\\b(treatment|therapy|medication|medicine|drug|plan)\\b",
       "\\btreatment plan\\b",
-      "\\bwhat (treatment|medication|medicine|drug|therapy)\\b.{0,20}\\b(should|to)\\b"
+      "\\bwhat (treatment|medication|medicine|drug|therapy)\\b.{0,20}\\b(should|to)\\b",
+      "\\b(take|taking|took|get|getting)\\s+(him|her|them|the patient)\\s+off\\b",
+      "\\b(put|putting|start|starting|switch|switching)\\s+(him|her|them|the patient)\\s+(on|onto|to)\\b",
+      "\\b(stop\\w*|discontinu\\w*|withdraw\\w*|increas\\w*|decreas\\w*|reduc\\w*|double|halve)\\b.{0,25}\\b(his|her|their|the patient's)\\s+(medic\\w*|dose|tablets?|pills?|drugs?|insulin|statins?|alendronate|metformin|lisinopril)\\b",
+      "\\b(take|taking|took|come|coming|get|getting)\\b.{0,25}\\boff\\b",
+      "\\b(put|putting|start|starting)\\b.{0,15}\\b(him|her|them|the patient)\\b.{0,5}\\bon\\b",
+      "\\b(stop|stopping|discontinue|discontinuing|switch|switching|increase|decrease|reduce|raise|lower|double|halve)\\b.{0,25}\\b(his|her|their|the patient'?s?)\\b.{0,30}\\b(medicine|medication|drug|tablets?|pills?|dose|alendronate|metformin|lisinopril|statin|insulin|\\w+(pril|sartan|olol|statin|dipine))\\b"
     ],
     "bulk_data": [
       "\\b(all|every|each)( of the)? patients?\\b",

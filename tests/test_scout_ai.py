@@ -41,7 +41,7 @@ def main() -> None:
         checks.append(cond)
         print(f"{'PASS' if cond else 'FAIL'}  {name}  {detail}")
 
-    unclear = "Is he on two statins at the same time?"
+    unclear = "Could his tablets be clashing?"  # rules cannot place this wording: Nemotron interprets it
     rules_only = Scout(patients=patients).decide(unclear, MRN, {"id": "t", "role": "clinician"})
     check("rules alone: this request goes to clarify", rules_only.status == "clarify", rules_only.status)
 
@@ -53,7 +53,7 @@ def main() -> None:
     check("Nemotron was asked on the interpreter lane", llm.lanes == [json.loads(REGISTRY_FILE.read_text(encoding="utf-8"))["lanes"]["interpreter"]], str(llm.lanes))
 
     llm = StandIn({"intent": "unsafe", "confidence": 0.8, "reason": "asks to change a treatment"})
-    d = Scout(patients=patients, llm=llm).decide("Should we take him off alendronate?", MRN, {"id": "t", "role": "clinician"})
+    d = Scout(patients=patients, llm=llm).decide("Would he be better without the alendronate now?", MRN, {"id": "t", "role": "clinician"})
     check("Nemotron can add a block the rules missed", d.status == "blocked" and "ai-flagged-unsafe" in d.risk["flags"],
           f"{d.status} {d.risk['flags']}")
 

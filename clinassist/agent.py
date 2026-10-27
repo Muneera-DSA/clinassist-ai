@@ -36,7 +36,8 @@ from .verifier import Verdict, evaluate, ids_in, template_summary  # noqa: F401 
 # HIGH rules and the check script that finds them: the checker requires a HIGH finding to be covered only when its
 # check is allowed for this request, and tells the boss which check it missed.
 HIGH_RULE_SCRIPT = {"ckd-accelerated": "check_egfr_decline", "renal-alendronate": "check_renal_dosing",
-                    "renal-metformin": "check_renal_dosing", "allergy-match": "check_allergy_conflicts"}
+                    "renal-metformin": "check_renal_dosing", "allergy-match": "check_allergy_conflicts",
+                    "rx-opioid-benzo": "check_risky_combinations", "rx-raas-dual": "check_risky_combinations"}
 
 TRANSIENT = re.compile(r"empty_response|provider request failed|provider_error|HTTP 50[234]|timed out|Timeout|unreachable", re.I)
 PERMANENT = re.compile(r"Function not found|not found|unauthori[sz]ed|forbidden|invalid api key|switched off|HTTP 400", re.I)  # no point retrying
@@ -163,6 +164,36 @@ def template_from_results(ctx: S.Ctx) -> str:
                 if f["rule_level"] in ("high", "review") and f["evidence"] and f["title"] not in seen_titles:
                     seen_titles.add(f["title"])
                     L.append(f"- {f['title']} [{', '.join(f['evidence'][:4])}].")
+    for key, out in ctx.gathered.items():
+        if key == "get_patient_details" and isinstance(out, dict):
+            L.append("## Patient details (identity)")
+            L.append(f"- {out['name']}, MRN {out['mrn']}: born {out['birth_date']}, age {out['age']} on {out['age_on']}, sex {out['sex']}."
+                     + (f" Deceased {out['deceased']}." if out.get("deceased") else ""))
+            L += [f"- Linked {r['system']} record {r['record_id']} ({r['status']})." for r in out["linked_records"]]
+            L += [f"- {r['system'].capitalize()} record {r['record_id']} is waiting for a person's identity decision." for r in out["pending_review"]]
+        if key == "list_visits" and isinstance(out, dict) and out.get("visits"):
+            kinds = ", ".join(f"{v} {k}" for k, v in out["counts"].items())
+            L.append(f"## Hospital visits in the review period: {out['n']} ({kinds})")
+            for v in out["visits"][:25]:
+                L.append(f"- {v['date']}: {v['kind']}, {v['type']}" + (f" at {v['organisation']}" if v["organisation"] else "") + f" [{v['eid']}].")
+        if key == "list_lab_visits" and isinstance(out, dict) and out.get("lab_visits"):
+            L.append(f"## Laboratory visits in the review period: {out['n']}")
+            for v in out["lab_visits"][:25]:
+                L.append(f"- {v['date']}: {v['n']} test(s) collected, accession {v['accessions']} [{v['eid']}].")
+    for key, out in ctx.gathered.items():
+        if key == "list_lab_results" and isinstance(out, dict) and out.get("tests"):
+            L.append("## Laboratory tests in the review period")
+            for t in out["tests"][:25]:
+                L.append(f"- {t['test']}: {t['n']} result(s), latest {t['latest_value']} {t['unit'] or ''} on {t['latest_date']} [{t['eid']}].".replace(" on", " on", 1))
+            break
+    if not seen_titles:  # nothing flagged: say which medicines were checked, each with its record
+        for key, out in ctx.gathered.items():
+            if key.startswith("list_medications") and isinstance(out, dict) and out.get("medications"):
+                L.append("## Medicines checked: no safety flag raised")
+                for m in out["medications"][:12]:
+                    if m.get("evidence"):
+                        L.append(f"- {m['medication']}: {m['status']}, last prescribed {m['last_prescribed']} [{m['evidence'][0]}].")
+                break
     for key, out in ctx.gathered.items():
         if key.startswith("compute_trend") and isinstance(out, dict) and out.get("available") and out["direction"] != "too few results":
             L.append(f"- {out['label']} is {out['direction']}: {out['first']['value']:g} on {out['first']['date']} and "
@@ -365,6 +396,14 @@ class Agent:
         bundle = {k: v for k, v in self.ctx.gathered.items() if not k.startswith("verify_draft")}
         msg = (f"Request: {task}\nPatient: {self.ctx.rec.label if self.ctx.rec else self.ctx.mrn}\n"
                f"Script results:\n{json.dumps(compact(bundle), default=str)}\n\n{WRITER_LENGTH}")
+        if getattr(self, "_nodata", None):
+            msg += ("\n\nNot found in the records (ClinAssist reports these itself; do not write about missing data): "
+                    + " ".join(self._nodata))
+        learned = [x for x in (self._lessons or []) if x.startswith("Clinician feedback")]
+        if learned:
+            msg += ("\n\nLessons from clinician feedback on earlier answers (Meterless memory). Use them for focus and style "
+                    "only; every fact must still come from the script results above:\n- " + "\n- ".join(learned[:5]))
+            self._t("writer", "lessons-applied", count=len(learned[:5]))
         if feedback:
             msg += ("\n\nYour previous draft FAILED these checks. Fix every one; remove any sentence you cannot support:\n"
                     + json.dumps(feedback[:15]))
@@ -416,6 +455,67 @@ class Agent:
 
     # ------------------------------------------------------------ the loop
     def run(self, task: str, ctx: S.Ctx, contract: dict | None = None, require_contract: bool = True) -> AgentResult:
+        self._nodata: list[str] = []
+        self._task = task
+        r = self._run(task, ctx, contract, require_contract)
+        heading = self.HEADINGS.get(((contract or {}).get("intent") or {}).get("primary") or "")
+        if heading and r.summary.startswith("# Pre-visit summary"):
+            r.summary = "# " + heading + r.summary[len("# Pre-visit summary"):]
+        if self._nodata and r.status in ("verified-ai", "verified-rules", "escalated"):
+            # Absences come straight from the scripts' empty results (deterministic), so they are added after the fact-check.
+            r.summary = r.summary.rstrip() + "\n\n## Not found in the records\n" + "\n".join(f"- {n}" for n in self._nodata)
+        return r
+
+    HEADINGS = {"admin.details": "Patient details and visits", "medication.review": "Medicine safety review", "finding.explain": "Flagged findings", "trend.review": "Lab results and trends",
+                "gaps.review": "Missing or overdue tests", "identity.review": "Linked records"}
+
+    # ------------------------------------------------------------ "no data" answers
+    FOCUS = ("list_lab_results", "compute_trend", "find_medication", "list_medications", "list_emergency_visits", "list_problems",
+             "list_visits", "list_lab_visits")
+
+    def no_data(self) -> tuple[list[str], int]:
+        """Plain sentences for what was asked about but is not in the records, and how many focused results exist."""
+        rec = self.ctx.rec
+        who = rec.label if rec is not None else self.ctx.mrn
+        win = next((v.get("window") for k, v in self.ctx.gathered.items() if k.startswith("fetch_record") and isinstance(v, dict)), None) or {}
+        span = f"between {win['from']} and {win['to']}" if win.get("from") else "in the review period"
+        notes, focused = [], 0
+        for k, v in self.ctx.gathered.items():
+            name = k.split("(")[0]
+            if name not in self.FOCUS or not isinstance(v, dict):
+                continue
+            focused += 1
+            empty = v.get("available") is False or v.get("n") == 0
+            if not empty:
+                continue
+            if name in ("list_lab_results", "compute_trend"):
+                label = v.get("label") or str(v.get("analyte", "")).upper()
+                intent = ((self.contract or {}).get("intent") or {}).get("primary")
+                asked = str(v.get("analyte", "")).lower() in getattr(self, "_task", "").lower() or label.lower() in getattr(self, "_task", "").lower()
+                if v.get("analyte") == "all":
+                    notes.append(f"No laboratory results are recorded for {who} {span}.")
+                    continue
+                if intent in ("medication.review", "gaps.review", "summary.previsit", "trend.review") and not asked:
+                    continue  # background context for this kind of request, not what was asked about
+                notes.append(f"No {label} results are recorded for {who} {span}.")
+            elif name == "find_medication":
+                notes.append(f"No prescription for {v.get('name')} is recorded for {who} in the hospital or pharmacy records.")
+            elif name == "list_medications":
+                notes.append(f"No medicines are recorded for {who} in the pharmacy records.")
+            elif name == "list_visits":
+                notes.append(f"No hospital visits or admissions are recorded for {who} {span}.")
+            elif name == "list_lab_visits":
+                notes.append(f"No laboratory visits are recorded for {who} {span}.")
+            elif name == "list_emergency_visits":
+                notes.append(f"No emergency visits are recorded for {who} {span}.")
+            elif name == "list_problems":
+                notes.append(f"No diagnoses are recorded for {who}.")
+        uniq: dict[str, str] = {}
+        for n in notes:  # the same absence can come from two scripts (e.g. 'EGFR' and 'eGFR'): say it once
+            uniq.setdefault(n.lower(), n)
+        return list(uniq.values()), focused
+
+    def _run(self, task: str, ctx: S.Ctx, contract: dict | None = None, require_contract: bool = True) -> AgentResult:
         self.ctx, self.calls, self._lessons = ctx, [], []
         self._t("agent", "start", task=task, patient=ctx.mrn)
         ok, why = verify_contract(contract, ctx.mrn) if (contract is not None or require_contract) else (True, "no contract required")
@@ -448,6 +548,45 @@ class Agent:
         load_errors = [t for t in self.trace if t["action"] == "script-error" and t["tool"] == "fetch_record"]
         if self.ctx.rec is None and load_errors:
             return AgentResult("error", f"Could not load the patient record: {load_errors[-1]['error']}", {}, self.calls, 0, self.trace)
+
+        notes, focused = self.no_data()
+        LABS = ("list_lab_results", "compute_trend")
+        empty_lab = any(k.split("(")[0] in LABS and isinstance(v, dict) and (v.get("available") is False or v.get("n") == 0)
+                        for k, v in self.ctx.gathered.items())
+        if focused and empty_lab and self.contract:
+            # Before saying "not in the records", run the contract's own look-ups the boss skipped (e.g. the list of all
+            # lab tests for "what blood tests has she had?"). Found 27 Oct: the boss only asked for eGFR and creatinine,
+            # both empty, and the answer wrongly said there were no results while 11 other lab results existed.
+            skipped = [st for st in self.contract.get("plan", []) if st["tool"] in LABS and self._key(st) not in self.ctx.gathered]
+            if skipped:
+                self._t("meterless", "lookups-before-no-data", scripts=[self._key(st) for st in skipped])
+                for st in skipped:
+                    try:
+                        self._script(st["tool"], st.get("args") or {}, actor="meterless-enforced")
+                    except Exception as e:  # noqa: BLE001 - recorded by Meterless
+                        self._t("executor", "script-error", tool=st["tool"], error=str(e)[:200])
+                notes, focused = self.no_data()
+        empty_focused = sum(1 for k, v in self.ctx.gathered.items() if k.split("(")[0] in self.FOCUS and isinstance(v, dict)
+                            and (v.get("available") is False or v.get("n") == 0))
+        # Only a pure look-up question ("Is he on metformin?") ends here: if any other check or list ran (a medicine
+        # review, a summary), its results are the answer and the missing items are added as a note at the end.
+        def has_content(v) -> bool:
+            if not isinstance(v, dict):
+                return False
+            if v.get("criterion_met") is True or (isinstance(v.get("n"), int) and v["n"] > 0):
+                return True
+            return any(isinstance(v.get(f), list) and v[f] for f in ("medications", "items", "results", "findings", "problems", "visits"))
+        enforced = {n for t in self.trace if t.get("action") == "required-checks-added" for n in t.get("scripts", [])}
+        other = [k for k, v in self.ctx.gathered.items()
+                 if k.split("(")[0] not in self.FOCUS + ("fetch_record", "rank_findings", "build_timeline")
+                 and k not in enforced and has_content(v)]
+        if focused and empty_focused == focused and not other:
+            # Everything the question was about is absent: say so plainly. Nothing to write or fact-check.
+            text = "\n".join(f"- {n}" for n in notes)
+            self._t("agent", "no-data", notes=notes)
+            return AgentResult("no-data", text, {"passed": True, "issues": [], "stats": {}, "reason": "nothing recorded for what was asked"},
+                               self.calls, 0, self.trace)
+        self._nodata = notes
 
         feedback, draft, kind, verdict = None, "", "rules", Verdict(False)
         judge_notes: list[dict] = []

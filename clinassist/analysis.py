@@ -518,6 +518,117 @@ def check_allergy_conflicts(rec: PatientRecord, tr: dict[str, Trend], meds: list
     return f
 
 
+# Small, explicit class maps for the medicine-combination checks (matched on the active ingredient). Demo scope only.
+OPIOID = r"hydrocodone|oxycodone|fentanyl|morphine|meperidine|tramadol|codeine|hydromorphone|methadone|tapentadol|remifentanil"
+BENZO = r"diazepam|clonazepam|lorazepam|alprazolam|midazolam|temazepam|chlordiazepoxide|clobazam"
+NSAID = r"ibuprofen|naproxen|diclofenac|meloxicam|celecoxib|indomethacin|ketorolac"
+ACEI = r"pril\b"
+ARB = r"sartan\b"
+DIURETIC = r"furosemide|hydrochlorothiazide|chlorthalidone|bumetanide|torsemide|indapamide|spironolactone"
+P2Y12 = r"clopidogrel|prasugrel|ticagrelor"
+ANTICOAG = r"heparin|enoxaparin|warfarin|apixaban|rivaroxaban|dabigatran|edoxaban|bivalirudin"
+# AGS 2023 Beers Criteria, medicines to avoid in adults 65+ (subset relevant to this data; NSAIDs: avoid chronic use).
+BEERS = {r"diphenhydramine|chlorpheniramine|doxylamine|hydroxyzine|promethazine": "first-generation antihistamine (strongly anticholinergic)",
+         BENZO: "benzodiazepine (falls, fractures, confusion)",
+         r"meperidine": "meperidine (neurotoxicity; safer opioids exist)",
+         r"cyclobenzaprine|methocarbamol|carisoprodol|metaxalone": "skeletal muscle relaxant (sedation, falls)",
+         NSAID: "NSAID (avoid chronic use: bleeding and kidney risk)"}
+
+
+def _rx(meds: list[Medication], pattern: str) -> list[Medication]:
+    return [m for m in _active(meds) if re.search(pattern, m.ingredient)]
+
+
+def _names(ms: list[Medication]) -> str:
+    return "; ".join(f"{m.medication} (last prescribed {m.last_prescribed})" for m in ms)
+
+
+def _ev(*groups: list[Medication]) -> list[str]:
+    out: list[str] = []
+    for g in groups:
+        for m in g:
+            for e in m.evidence[:1]:
+                if e not in out:
+                    out.append(e)
+    return out
+
+
+def check_risky_combinations(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Active medicines that are risky together: opioid + benzodiazepine, two blockers of the same blood-pressure
+    hormone system, an NSAID with a blood thinner, two P2Y12 antiplatelets, and NSAID + ACE inhibitor/ARB + diuretic."""
+    f: list[Finding] = []
+    note = " Each is marked active in the pharmacy record; a clinician or pharmacist should confirm what is actually taken."
+    op, bz = _rx(meds, OPIOID), _rx(meds, BENZO)
+    if op and bz:
+        f.append(Finding("rx-opioid-benzo", "high", "An opioid and a benzodiazepine are both active",
+                         "Together they can cause profound sedation, slowed breathing, coma and death (FDA boxed warning). "
+                         + _names(op + bz) + "." + note, _ev(op, bz), "fda_opioid_benzo_2016"))
+    arni = _rx(meds, r"sacubitril")
+    acei = _rx(meds, ACEI)
+    arb = [m for m in _rx(meds, ARB) if m not in arni]
+    if acei and arni:
+        f.append(Finding("rx-raas-dual", "high", "An ACE inhibitor is active together with sacubitril/valsartan (Entresto)",
+                         "The Entresto label contraindicates use with an ACE inhibitor (risk of angioedema; a 36-hour gap is "
+                         "required when switching). " + _names(acei + arni) + "." + note, _ev(acei, arni), "entresto_label"))
+    if arni and arb:
+        f.append(Finding("rx-raas-dual", "review", "Another ARB is active together with sacubitril/valsartan (Entresto)",
+                         "Entresto already contains the ARB valsartan; its label advises against adding another ARB. "
+                         + _names(arb + arni) + "." + note, _ev(arb, arni), "entresto_label"))
+    if acei and arb:
+        f.append(Finding("rx-raas-dual", "review", "An ACE inhibitor and an ARB are both active",
+                         "Combining them (dual blockade) raised kidney problems and high potassium without extra benefit in "
+                         "ONTARGET. " + _names(acei + arb) + "." + note, _ev(acei, arb), "ontarget_2008"))
+    ns = _rx(meds, NSAID)
+    thin = _rx(meds, P2Y12 + "|" + ANTICOAG)
+    if ns and thin:
+        f.append(Finding("rx-nsaid-bleeding", "review", "An NSAID is active together with an antiplatelet or anticoagulant",
+                         "NSAID labels warn that bleeding risk, including stomach bleeding, rises with these medicines. "
+                         + _names(ns + thin) + "." + note, _ev(ns, thin), "nsaid_label_bleeding"))
+    p2 = _rx(meds, P2Y12)
+    if len({re.search(P2Y12, m.ingredient).group(0) for m in p2}) >= 2:
+        f.append(Finding("rx-p2y12-dual", "review", "Two different P2Y12 antiplatelets are active",
+                         "They are not normally used together; this usually means a switch where the old one was not stopped. "
+                         + _names(p2) + "." + note, _ev(p2), "p2y12_rule"))
+    raas = acei + arb + arni
+    diu = _rx(meds, DIURETIC)
+    if ns and raas and diu:
+        f.append(Finding("rx-nsaid-kidney", "review", "NSAID + ACE inhibitor/ARB + diuretic are all active",
+                         "This triple combination was linked to a higher rate of acute kidney injury (Lapi et al., BMJ 2013). "
+                         + _names(ns + raas + diu) + "." + note, _ev(ns, raas, diu), "lapi_2013"))
+    return f
+
+
+def _age(rec: PatientRecord) -> int | None:
+    b = str(rec.patient.get("birth_date") or "")[:10].replace("/", "-")
+    try:
+        bd = date.fromisoformat(b) if "-" in b else date(int(b[:4]), int(b[4:6]), int(b[6:8]))
+    except (ValueError, IndexError):
+        return None
+    return rec.as_of.year - bd.year - ((rec.as_of.month, rec.as_of.day) < (bd.month, bd.day))
+
+
+def check_older_adult_medicines(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
+    """Number of active medicines (polypharmacy) and, for adults 65+, active medicines on the AGS Beers list."""
+    f: list[Finding] = []
+    act = _active(meds)
+    distinct = sorted({m.ingredient for m in act})
+    if len(distinct) >= 5:
+        f.append(Finding("rx-polypharmacy", "review" if len(distinct) >= 10 else "info",
+                         f"{len(distinct)} different medicines are marked active",
+                         "Five or more is the most common definition of polypharmacy; ten or more raises the risk of "
+                         "interactions and adverse events further. Some may be out of date (see the stale-medicine check): "
+                         + ", ".join(distinct) + ".", _ev(act), "masnoon_2017"))
+    age = _age(rec)
+    if age is not None and age >= 65:
+        hits = [(m, why) for m in act for pat, why in BEERS.items() if re.search(pat, m.ingredient)]
+        if hits:
+            f.append(Finding("rx-beers", "review", f"{len(hits)} active medicine(s) on the Beers list for adults 65+ (patient is {age})",
+                             "The AGS Beers Criteria list medicines that are usually best avoided in older adults: "
+                             + "; ".join(f"{m.medication}: {why}" for m, why in hits) + ". A clinician should review.",
+                             _ev([m for m, _ in hits]), "ags_beers_2023"))
+    return f
+
+
 def check_identity_pending(rec: PatientRecord, tr: dict[str, Trend], meds: list[Medication], rules: dict) -> list[Finding]:
     """Records that may belong to this patient but wait for a person: they are NOT used."""
     return [Finding("identity-pending", "review", f"Possible {p['system']} record {p['record_id']} is waiting for identity review",
@@ -527,7 +638,8 @@ def check_identity_pending(rec: PatientRecord, tr: dict[str, Trend], meds: list[
 
 CHECKS = [check_kidney_stage, check_egfr_decline, check_renal_dosing, check_potassium_on_acei, check_diabetes_control,
           check_stale_medications, check_duplicate_ingredients, check_range_crossings, check_monitoring_gaps,
-          check_lab_conflicts, check_problem_list, check_low_bp_on_treatment, check_allergy_conflicts, check_identity_pending]
+          check_lab_conflicts, check_problem_list, check_low_bp_on_treatment, check_allergy_conflicts, check_risky_combinations,
+          check_older_adult_medicines, check_identity_pending]
 SEVERITY_ORDER = {"high": 0, "review": 1, "info": 2}
 
 

@@ -50,11 +50,17 @@ export interface ScoutDecision {
   intent: { primary: string | null; confidence: number; secondary: string[] };
   risk: { level: string; flags: string[]; matched: string[] };
   plan: { tool: string; args: Record<string, unknown> }[]; lanes: Record<string, string>;
-  contract: any | null; telemetry: any; contract_check?: { ok: boolean; reason: string };
+  contract: any | null; telemetry: any; contract_check?: { ok: boolean; reason: string }; followup_of?: string;
 }
 export interface RunEvent { type: 'start' | 'scout' | 'stage' | 'trace' | 'result' | 'ping'; t: number; [k: string]: any; }
-export interface AgentResult { status: string; summary: string; verdict: any; plan: { tool: string; args?: any; why?: string }[]; rounds: number; retrieved?: number; }
+export interface SourceInfo { key: string; title: string; url: string | null; }
+export interface AgentResult { status: string; summary: string; verdict: any; plan: { tool: string; args?: any; why?: string }[]; rounds: number; retrieved?: number; sources?: SourceInfo[]; }
 export interface RunSummary { run_id: string; at: string; prompt: string; mrn: string; user: { id: string; role: string }; ai: boolean; mode: string; status: string; steps: number; }
+
+export interface FeedbackItem { at: string; run_id: string; rating: 'up' | 'down'; comment: string; intent: string; prompt: string; status: string; by: string; role: string; lesson: string; }
+export interface ScriptInfo { name: string; does: string; returns: string; kind: string; args: Record<string, string>; }
+export interface FeedbackList { count: number; up: number; down: number; items: FeedbackItem[]; }
+export interface FeedbackSaved { ok: boolean; lesson: string; lesson_id: string; meterless_run: string; }
 
 export function errorText(e: unknown): string {
   if (e instanceof HttpErrorResponse) {
@@ -91,9 +97,13 @@ export class Api {
   runs() { return this.get<RunSummary[]>('/api/runs'); }
   run(id: string) { return this.get<any>(`/api/runs/${encodeURIComponent(id)}`); }
   evaluation() { return this.get<any>('/api/evaluation'); }
+  feedback(body: { run_id: string; rating: 'up' | 'down'; comment?: string; user: string; role: string }) { return this.post<FeedbackSaved>('/api/feedback', body); }
+  feedbackList() { return this.get<FeedbackList>('/api/feedback'); }
+  scripts() { return this.get<{ scripts: ScriptInfo[] }>('/api/scripts'); }
+  prescriptions(mrn: string, fresh = false) { return this.get<any>(`/api/patients/${encodeURIComponent(mrn)}/prescriptions${fresh ? '?fresh=1' : ''}`); }
 
   /** Streams one agent run (Server-Sent Events over a POST). Calls onEvent for every step as it happens. */
-  async runAgent(body: { prompt: string; mrn: string; role: string; user?: string; ai: boolean }, onEvent: (e: RunEvent) => void,
+  async runAgent(body: { prompt: string; mrn: string; role: string; user?: string; ai: boolean; history?: { q: string; status: string }[] }, onEvent: (e: RunEvent) => void,
                  signal?: AbortSignal): Promise<void> {
     const res = await fetch('/api/agent/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal });
     if (!res.ok || !res.body) {
