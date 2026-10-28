@@ -58,8 +58,9 @@ Cited answer for the clinician to review.  Every step above is approved against 
 |---|---|
 | **Zetaris** | The only data path. Federates SQL Server, MySQL and PostgreSQL into one SQL dialect. Every patient fetch is a federated query (shown with its SQL in the workflow trace); the Fragmented data page runs cross-engine joins live. All 12 tables verified identical to the source files through Zetaris. |
 | **Meterless** | Supervises the whole agent. **Scout** checks every request and signs a contract; the **supervisor** authorises and records every script, data fetch, model call and memory lookup (fails closed if unavailable); the **World Model** holds identity links, reviewer decisions and every run (the audit trail); **H-MEM** ranks the script catalog for each question and stores lessons from clinician feedback; **Nightshift** routes model calls through lanes (planner, writer, judge, interpreter). |
-| **NVIDIA Nemotron** | The reasoning layer, reached through Nightshift: the boss that chooses scripts, the interpreter for requests the rules cannot place, the writer, and the judge. All lanes use `nvidia/nemotron-3.5-lightning-30b-a3b`, with retry and lane fallback. |
-| **Cursor** | The development environment for the whole build. |
+| **NVIDIA Nemotron** | The reasoning layer, reached through Nightshift: the boss that chooses scripts, the interpreter for requests the rules cannot place, the writer, and the judge. Fast lane uses nvidia/nemotron-3.5-lightning-30b-a3b & Deep lane uses nvidia/nemotron-3-ultra-550b-a55b, with retry and lane fallback. |
+| **Cursor** | The development environment for the whole build process. Used Free Plan Grok Models.
+ |
 
 What is unusual: the model makes every decision but can only act through approved single-action scripts, every action is
 recorded by Meterless, and nothing it writes is shown until a deterministic fact-check (every citation retrieved, every number
@@ -89,20 +90,20 @@ Install and check every item below **before** cloning. Each "check" command shou
 |---|---|---|---|---|
 | Windows + PowerShell | Windows 10/11, PowerShell 5.1+ (built in) | All commands below are PowerShell | `$PSVersionTable.PSVersion` | built in |
 | Git | any recent | Clone the repository | `git --version` | git-scm.com |
-| Python | **3.12 or newer** (tick *Add python.exe to PATH* when installing) | Backend, agent, scripts, data build | `python --version` | python.org |
+| Python | **3.12 or newer** (Add python.exe to PATH when installing) | Backend, agent, scripts, data build | `python --version` | python.org |
 | Node.js (includes npm) | **20.19+ or 22.12+** (LTS) | Meterless gateway, World Model, H-MEM, Angular build | `node --version` and `npm.cmd --version` | nodejs.org |
-| Angular CLI | 20.3 (installed **locally** by `npm.cmd install` in `web\`; no global install needed) | Builds the web app | `cd web; npx.cmd ng version` (after step 4) | via npm |
-| Docker Desktop | recent, **running**, WSL 2 backend, about 4 GB RAM free | The three source databases (SQL Server 2022, MySQL 8.4, PostgreSQL 16) | `docker --version` and `docker compose version` | docker.com |
-| Zetaris | local Docker install, with an API key | The only data path to the three databases | open `http://localhost:3000` | from the Zetaris sponsor resources |
-| Meterless Nightshift | runtime with a token, and NVIDIA Nemotron access | Supervision and model routing (the NVIDIA key stays in Nightshift, never in this repo) | Nightshift app is running | from the Meterless sponsor resources |
+| Docker Desktop |recent, running, about 8 GB RAM free
+ | The three source databases (SQL Server 2022, MySQL 8.4, PostgreSQL 16) | `docker --version` and `docker compose version` | docker.com |
+| Zetaris | local Docker install, Generate an API key | The only data path to the three databases | open `http://localhost:3000` | from the Zetaris sponsor resources |
+| Meterless Nightshift | install,setup NVIDIA provider, obtain a token| Supervision and model routing (the NVIDIA key stays in Nightshift, never in this repo) | Nightshift app is running | from the Meterless sponsor resources |
 
 Python packages (`requirements.txt`: `requests`, `python-dotenv`), Node packages (`package.json`: World Model, H-MEM,
-`tsx`) and the Angular packages (`web/package.json`) are installed by the steps below. Without Zetaris you can still run
-the app on the offline copy of the same data (`--source csv`, step F); without Nightshift, the rule-based answers work and
-the Nemotron switch on the Ask page fails.
+`tsx`) and the frontend packages (`web/package.json`) are installed by the steps below. 
 
 > **PowerShell tip:** if `npm` or `npx` fails with *"running scripts is disabled on this system"*, use `npm.cmd` and
 > `npx.cmd` instead (as below). They do the same thing and need no policy change.
+
+💡 Note for Linux / macOS Users: This documentation uses Windows PowerShell syntax. If you are on Linux or macOS, simply open your Bash or Zsh terminal and replace the PowerShell commands with their standard Bash equivalents (e.g., use forward slashes / for file paths and sudo if you encounter permission issues).
 
 ## Installation
 
@@ -113,7 +114,7 @@ All commands run in PowerShell from the project folder unless a step says otherw
 ```powershell
 git clone https://github.com/Muneera-DSA/clinassist-ai.git
 cd clinassist-ai
-git branch --show-current     # should print main; the synthetic data folder data\synthea_fhir\ must exist
+git branch --show-current     # should print nemotron-agent; the synthetic data folder data\synthea_fhir\ must exist
 dir data\synthea_fhir | Measure-Object   # about 114 files
 ```
 
@@ -146,10 +147,10 @@ copy sources\.env.example sources\.env    # passwords for the three source datab
 ```
 
 - In `sources\.env`, choose your own database passwords (admin and read-only user for each system).
-- In `.env`, fill in your Zetaris URL, organisation and API key, your Meterless runtime token, and a Scout signing key.
-  Generate the signing key with:
-  `.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"`
-- Both files are git-ignored. Never commit them or paste their values anywhere.
+-In .env, fill in your Zetaris URL (Default Ok), organisation (Default Ok) and API key, your Meterless runtime token, and a Scout signing key
+ ( Generate the signing key with:
+  `.\.venv\Scripts\python.exe -c "import secrets; print(secrets.token_hex(32))"`)
+
 
 ### 6. Build the synthetic source data (once)
 
@@ -204,33 +205,22 @@ with the read-only passwords from `sources\.env` (details in `docs/run_the_demo.
 npx.cmd tsx meterless/world/build_world.ts    # 112 patients, links and the records waiting for a person
 ```
 
-### E. Start the Meterless gateway (window 1, start first)
+### E. Start the Meterless gateway (Terminal 1, start first)
 
 ```powershell
-npx.cmd tsx meterless/gateway/server.ts    # http://127.0.0.1:8090
+npm.cmd run gateway   # http://127.0.0.1:8090
 ```
 
-### F. Start the Python backend (window 2)
+### F.  Start the Python backend (On another Terminal - Terminal 2)
 
 ```powershell
 .\.venv\Scripts\python.exe -m server                 # live data through Zetaris, http://127.0.0.1:8000
-# or, if Zetaris is not running (offline copy of the same CSVs):
-.\.venv\Scripts\python.exe -m server --source csv
 ```
 
-### G. Build the web app (window 3)
+### G. Build the web app (On another Terminal - Terminal 3)
+For live reload during developement `cd web` then `npm.cmd start` and open **http://localhost:4200** (it forwards `/api` to the backend on port 8000). choose a role, and (for judges) switch on **Judge view** in the sidebar.
 
-Build once and let the backend serve it:
-
-```powershell
-cd web
-npx.cmd ng build --configuration development
-```
-
-Open **http://127.0.0.1:8000**, choose a role, and (for judges) switch on **Judge view** in the sidebar.
-
-For live reload during development instead: `cd web` then `npm.cmd start` and open **http://localhost:4200**
-(it forwards `/api` to the backend on port 8000).
+  
 
 ### Troubleshooting
 
@@ -242,20 +232,28 @@ For live reload during development instead: `cd web` then `npm.cmd start` and op
 | Answers fail with "gateway down" | Start the Meterless gateway (step E) before the backend |
 | Nemotron answers fail, rule-based ones work | Check the Meterless token in `.env` and that Nightshift is running |
 | No patients / empty tables after cloning | Run step 6 (`clinassist_build_sources.py`) **before** step A. If the databases were already started empty, reset them: `cd sources; docker compose down -v; docker compose up -d; cd ..`, then redo B–D |
-| `data\synthea_fhir\` is missing or empty | You cloned an old copy: `git pull`, and check that you are on the latest `main` |
 | `python` opens the Microsoft Store or is not found | Reinstall Python 3.12 with *Add python.exe to PATH* ticked, then open a new PowerShell window |
 | Identity resolution or patient lists are empty | Steps C and D were skipped: run `run_matching.py --score` and `build_world.ts`, then restart the backend |
 | Evaluation page is empty | The evaluation files are regenerated by the scripts in `eval\` (see `docs/ml_handoff.md`) |
 
 ## Try it
 
-- **Doctor**, patient *OBERBRUNNER, KENDRICK*: Patient review (kidney function falling 82 → 25, alendronate with weak kidneys,
-  low blood pressure on three medicines); Medicine review (duplicate simvastatin, FDA labels); ask *"Which results are flagged?"*
-  or *"Any risky drug combinations?"* with Nemotron on, then open **⛓ Workflow trace**.
-- Ask about another patient by name (*"show kendrick's labs"* while someone else is selected): ClinAssist switches patient.
-- **Try to break it** (Judge view, Ask page): prompt injection, prescribing, diagnosis, another patient, wrong role, indirect
-  wording. Scout stops each before any data is read.
-- **Authorised hospital staff**: Identity resolution queue; ask *"List previous hospital visits and admissions"* (no clinical results).
+- **Doctor**, patient *OBERBRUNNER, KENDRICK*:
+   - Patient review (kidney function falling 82 → 25, alendronate with weak kidneys,low blood pressure on three medicines);
+  
+   - Medicine review (duplicate simvastatin, FDA labels).
+   - ask *"Which results are flagged?"*
+  or *"Any risky drug combinations?"* 
+   - Ask about another patient by name (*"show kendrick's labs"* while someone else is selected):ClinAssist switches patient.
+- **Try to break it** (Judge view, Chat page - Scout will stop each before any data is read.):
+   - prompt injection
+    - prescribing
+    - diagnosis
+    - another patient
+    - wrong role
+    - indirect wording
+- **Authorised hospital staff**:
+  - Identity resolution queue - ask *"List previous hospital visits and admissions"* (RESULT:no clinical results).
 - **Insurance coordinator**: a medicine review is refused, with a message listing what the role can ask.
 
 ## Tests and evaluation
@@ -274,7 +272,8 @@ clinical accuracy claims.
 
 ## Safety and limitations
 
-- Synthetic data only (Synthea). No real patient data. Secrets live in `.env` files that are git-ignored.
+- Synthetic data only (Synthea). No real patient data.  
+- Secrets live in `.env` files that are git-ignored.
 - ClinAssist never diagnoses, prescribes, gives doses, approves claims or submits anything. Every answer is for a qualified
   professional to review.
 - The clinical rule set is a demonstration with cited public thresholds; it has not been clinically validated.
@@ -284,10 +283,10 @@ clinical accuracy claims.
 
 ## Pre-existing components (declared)
 
-- **Meterless World Model** and **H-MEM** libraries, vendored in `meterless/vendor/` (sponsor components).
+- **Meterless Scout, World Model** and **H-MEM** libraries, vendored in `meterless/vendor`.
 - **Synthea** synthetic patient generator (data in `data/`).
 - **openFDA** drug label API (public data, fetched once into `reference/drug_labels.json`).
-- Open-source packages listed in `requirements.txt`, `package.json` and `web/package.json`.
+
 
 All ClinAssist code in this repository was written during the build window (from 22 October 2026).
 
